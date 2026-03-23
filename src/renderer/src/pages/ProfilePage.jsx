@@ -1,24 +1,35 @@
+import {
+  CardTitle,
+  ChipRow,
+  PageDesc,
+  PageGrid,
+  PageTitle,
+  PixelCard,
+  PixelCardLarge,
+  PixelChip
+} from '../styles/primitives'
+
 function ProfilePage() {
   return (
-    <section className="page-grid">
-      <article className="pixel-card pixel-card-large">
-        <h1 className="page-title">Profile</h1>
-        <p className="page-desc">Personal area for account and app identity information.</p>
-        <div className="chip-row">
-          <span className="pixel-chip">User: Pixel Guest</span>
-          <span className="pixel-chip">Plan: Explorer</span>
-          <span className="pixel-chip">Status: Online</span>
-        </div>
-      </article>
-      <article className="pixel-card">
-        <h2 className="card-title">Workspace</h2>
+    <PageGrid>
+      <PixelCardLarge>
+        <PageTitle>Profile</PageTitle>
+        <PageDesc>Personal area for account and app identity information.</PageDesc>
+        <ChipRow>
+          <PixelChip>User: Pixel Guest</PixelChip>
+          <PixelChip>Plan: Explorer</PixelChip>
+          <PixelChip>Status: Online</PixelChip>
+        </ChipRow>
+      </PixelCardLarge>
+      <PixelCard>
+        <CardTitle>Workspace</CardTitle>
         <p>This view can later hold avatar, profile details, and preferences.</p>
-      </article>
-      <article className="pixel-card">
-        <h2 className="card-title">Sync</h2>
+      </PixelCard>
+      <PixelCard>
+        <CardTitle>Sync</CardTitle>
         <p>Theme choice is persisted locally with a smooth animated switch.</p>
-      </article>
-    </section>
+      </PixelCard>
+    </PageGrid>
   )
 }
 

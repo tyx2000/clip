@@ -1,5 +1,79 @@
 import { useEffect, useState } from 'react'
+import styled from 'styled-components'
+import {
+  ButtonRow,
+  CardTitle,
+  EditorRow,
+  PageDesc,
+  PageGrid,
+  PageTitle,
+  PixelButton,
+  PixelCard,
+  PixelCardLarge,
+  PixelInput
+} from '../styles/primitives'
 import useSharedStore from '../store/sharedStore'
+
+const HomeGrid = styled(PageGrid)`
+  height: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-auto-rows: min-content;
+  align-content: start;
+  overflow: hidden;
+`
+
+const HomeHeader = styled.header`
+  margin-bottom: 14px;
+`
+
+const HomeStatsGrid = styled.section`
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+
+  @media (max-width: 700px) {
+    grid-template-columns: 1fr;
+  }
+`
+
+const HomeStatCard = styled.article`
+  background: var(--color-block-content);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 10px 12px;
+`
+
+const HomeStatLabel = styled.p`
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+`
+
+const HomeStatValue = styled.p`
+  margin: 6px 0 0;
+  font-size: ${({ $compact }) => ($compact ? '13px' : '16px')};
+  font-weight: ${({ $compact }) => ($compact ? 600 : 700)};
+  line-height: 1.4;
+`
+
+const HomeActions = styled.section`
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+`
+
+const HomeEditor = styled.section`
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+`
+
+const HomeEditorLabel = styled.p`
+  margin: 0 0 8px;
+  color: var(--color-text-soft);
+  font-size: 12px;
+  font-weight: 600;
+`
 
 function HomePage() {
   const count = useSharedStore((state) => state.count)
@@ -30,76 +104,63 @@ function HomePage() {
   }
 
   return (
-    <section className="page-grid page-home">
-      <article className="pixel-card pixel-card-large">
-        <header className="home-header">
-          <h1 className="page-title">Home Dashboard</h1>
-          <p className="page-desc">Zustand + Electron IPC multi-window shared state.</p>
-        </header>
+    <HomeGrid data-page="home">
+      <PixelCardLarge>
+        <HomeHeader>
+          <PageTitle>Home Dashboard</PageTitle>
+          <PageDesc>Zustand + Electron IPC multi-window shared state.</PageDesc>
+        </HomeHeader>
 
-        <section className="home-stats-grid">
-          <article className="home-stat-card">
-            <p className="home-stat-label">Shared Count</p>
-            <p className="home-stat-value">{hydrated ? count : 'loading...'}</p>
-          </article>
-          <article className="home-stat-card">
-            <p className="home-stat-label">Shared Message</p>
-            <p className="home-stat-value home-stat-value-message">
-              {hydrated ? message || '(empty)' : 'loading...'}
-            </p>
-          </article>
-          <article className="home-stat-card">
-            <p className="home-stat-label">IPC Ping</p>
-            <p className="home-stat-value home-stat-value-message">{pingResult || '-'}</p>
-          </article>
-          <article className="home-stat-card">
-            <p className="home-stat-label">Notification</p>
-            <p className="home-stat-value home-stat-value-message">{notifyResult || '-'}</p>
-          </article>
-        </section>
+        <HomeStatsGrid>
+          <HomeStatCard>
+            <HomeStatLabel>Shared Count</HomeStatLabel>
+            <HomeStatValue>{hydrated ? count : 'loading...'}</HomeStatValue>
+          </HomeStatCard>
+          <HomeStatCard>
+            <HomeStatLabel>Shared Message</HomeStatLabel>
+            <HomeStatValue $compact>{hydrated ? message || '(empty)' : 'loading...'}</HomeStatValue>
+          </HomeStatCard>
+          <HomeStatCard>
+            <HomeStatLabel>IPC Ping</HomeStatLabel>
+            <HomeStatValue $compact>{pingResult || '-'}</HomeStatValue>
+          </HomeStatCard>
+          <HomeStatCard>
+            <HomeStatLabel>Notification</HomeStatLabel>
+            <HomeStatValue $compact>{notifyResult || '-'}</HomeStatValue>
+          </HomeStatCard>
+        </HomeStatsGrid>
 
-        <section className="home-actions">
-          <div className="button-row">
-            <button className="pixel-btn" onClick={() => increment(1)}>
-              Count +1
-            </button>
-            <button className="pixel-btn" onClick={() => window.api.createWindow()}>
-              Open New Window
-            </button>
-            <button className="pixel-btn" onClick={handlePing}>
-              Call IPC Ping
-            </button>
-            <button className="pixel-btn" onClick={handleSendNotification}>
-              Send System Notification
-            </button>
-          </div>
-        </section>
+        <HomeActions>
+          <ButtonRow>
+            <PixelButton onClick={() => increment(1)}>Count +1</PixelButton>
+            <PixelButton onClick={() => window.api.createWindow()}>Open New Window</PixelButton>
+            <PixelButton onClick={handlePing}>Call IPC Ping</PixelButton>
+            <PixelButton onClick={handleSendNotification}>Send System Notification</PixelButton>
+          </ButtonRow>
+        </HomeActions>
 
-        <section className="home-editor">
-          <p className="home-editor-label">Message Editor</p>
-          <div className="editor-row">
-            <input
-              className="pixel-input"
+        <HomeEditor>
+          <HomeEditorLabel>Message Editor</HomeEditorLabel>
+          <EditorRow>
+            <PixelInput
               value={draftMessage}
               onChange={(event) => setDraftMessage(event.target.value)}
               placeholder="Type shared message"
             />
-            <button className="pixel-btn" onClick={() => setMessage(draftMessage)}>
-              Sync Message
-            </button>
-          </div>
-        </section>
-      </article>
+            <PixelButton onClick={() => setMessage(draftMessage)}>Sync Message</PixelButton>
+          </EditorRow>
+        </HomeEditor>
+      </PixelCardLarge>
 
-      <article className="pixel-card">
-        <h2 className="card-title">Sync Rules</h2>
+      <PixelCard>
+        <CardTitle>Sync Rules</CardTitle>
         <p>Changes are sent to main process by IPC and broadcast to all opened windows.</p>
-      </article>
-      <article className="pixel-card">
-        <h2 className="card-title">Persistence</h2>
+      </PixelCard>
+      <PixelCard>
+        <CardTitle>Persistence</CardTitle>
         <p>Shared state is saved under Electron userData and restored on next launch.</p>
-      </article>
-    </section>
+      </PixelCard>
+    </HomeGrid>
   )
 }
 

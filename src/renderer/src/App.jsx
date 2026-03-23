@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { HashRouter, Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import styled from 'styled-components'
 import SettingsModal from './components/SettingsModal'
 import Versions from './components/Versions'
 import HomePage from './pages/HomePage'
@@ -10,6 +11,152 @@ import QuestLogPage from './pages/QuestLogPage'
 import useSettingsStore from './store/settingsStore'
 import useSharedStore from './store/sharedStore'
 import useThemeStore from './store/themeStore'
+
+const AppShellLayout = styled.div`
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: ${({ $isSettingsWindow }) =>
+    $isSettingsWindow ? 'minmax(0, 1fr)' : '250px minmax(0, 1fr)'};
+  gap: 16px;
+  padding: 16px;
+  max-width: ${({ $isSettingsWindow }) => ($isSettingsWindow ? 'none' : '1480px')};
+  margin: 0 auto;
+
+  .compact-sidebar & {
+    grid-template-columns: ${({ $isSettingsWindow }) =>
+      $isSettingsWindow ? 'minmax(0, 1fr)' : '210px minmax(0, 1fr)'};
+  }
+
+  @media (max-width: 980px) {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    padding: 12px;
+  }
+`
+
+const Sidebar = styled.aside`
+  background: var(--color-block-nav);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-soft);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+
+  @media (max-width: 980px) {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+`
+
+const BrandCard = styled.div`
+  background: var(--color-block-brand);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line-soft);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+`
+
+const BrandTitle = styled.h1`
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+`
+
+const BrandSub = styled.p`
+  margin: 6px 0 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+`
+
+const NavList = styled.nav`
+  display: grid;
+  gap: 8px;
+`
+
+const NavItem = styled(NavLink)`
+  border-radius: 10px;
+  padding: 9px 12px;
+  text-decoration: none;
+  color: var(--color-text);
+  font-weight: 600;
+  background: var(--color-block-nav-item);
+  border: 1px solid transparent;
+  transition:
+    transform 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+
+  &:hover {
+    transform: translateY(-1px);
+    border-color: var(--line-soft);
+  }
+
+  &[aria-current='page'] {
+    background: var(--color-block-nav-item-active);
+    border-color: var(--line-soft);
+    font-weight: 700;
+  }
+`
+
+const SidebarBottom = styled.div`
+  margin-top: auto;
+  display: grid;
+  gap: 10px;
+
+  @media (max-width: 980px) {
+    margin-top: 0;
+  }
+`
+
+const SideAction = styled.button`
+  width: 100%;
+  border: none;
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-weight: 600;
+  background: var(--color-block-action);
+  color: var(--color-button-text);
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+  }
+`
+
+const AuthError = styled.p`
+  margin: 0;
+  border-radius: 10px;
+  background: #ffe6e6;
+  color: #8f3e3e;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+`
+
+const ContentArea = styled.main`
+  border-radius: 14px;
+  background: var(--color-block-content);
+  padding: ${({ $isSettingsWindow }) => ($isSettingsWindow ? '0' : '22px')};
+  display: grid;
+  grid-template-rows: ${({ $isSettingsWindow }) => ($isSettingsWindow ? '1fr' : '1fr auto')};
+  overflow: ${({ $isSettingsWindow }) => ($isSettingsWindow ? 'hidden' : 'auto')};
+  border: 1px solid var(--line-soft);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+
+  &:has(section[data-page='home']) {
+    overflow: hidden;
+  }
+`
+
+const VersionsWrap = styled.div`
+  margin-top: 14px;
+`
 
 const navItems = [
   { to: '/home', key: 'home' },
@@ -288,46 +435,38 @@ function AppShell() {
   }, [location.pathname, routeTitleMap, text.appTitle])
 
   return (
-    <div className={isSettingsWindow ? 'app-shell app-shell-settings' : 'app-shell'}>
+    <AppShellLayout $isSettingsWindow={isSettingsWindow}>
       {isSettingsWindow ? null : (
-        <aside className="sidebar">
-          <div className="brand-card">
-            <h1>{text.appTitle}</h1>
-            <p>
+        <Sidebar>
+          <BrandCard>
+            <BrandTitle>{text.appTitle}</BrandTitle>
+            <BrandSub>
               {text.window}: {windowRole}
-            </p>
-          </div>
+            </BrandSub>
+          </BrandCard>
 
-          <nav className="nav-list">
+          <NavList>
             {navItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-              >
+              <NavItem key={item.to} to={item.to}>
                 {text.nav[item.key]}
-              </NavLink>
+              </NavItem>
             ))}
-          </nav>
+          </NavList>
 
-          <div className="sidebar-bottom">
-            <button className="side-action" onClick={handleUserClick} disabled={authLoading}>
+          <SidebarBottom>
+            <SideAction onClick={handleUserClick} disabled={authLoading}>
               {userButtonLabel}
-            </button>
-            {authError ? <p className="auth-error">{authError}</p> : null}
-            <button className="side-action" onClick={openSettingsWindow}>
-              {text.settings}
-            </button>
+            </SideAction>
+            {authError ? <AuthError>{authError}</AuthError> : null}
+            <SideAction onClick={openSettingsWindow}>{text.settings}</SideAction>
             {/* Legacy modal button preserved per request:
-            <button className="side-action" onClick={() => setSettingsOpen(true)}>
-              Settings
-            </button>
+            <SideAction onClick={() => setSettingsOpen(true)}>Settings</SideAction>
             */}
-          </div>
-        </aside>
+          </SidebarBottom>
+        </Sidebar>
       )}
 
-      <main className={isSettingsWindow ? 'content-area settings-content-area' : 'content-area'}>
+      <ContentArea $isSettingsWindow={isSettingsWindow}>
         <Routes>
           <Route path="/" element={<Navigate to="/home" replace />} />
           <Route path="/home" element={<HomePage />} />
@@ -352,11 +491,11 @@ function AppShell() {
         </Routes>
 
         {isSettingsWindow ? null : (
-          <div className="versions-wrap">
+          <VersionsWrap>
             <Versions />
-          </div>
+          </VersionsWrap>
         )}
-      </main>
+      </ContentArea>
 
       {/* Legacy modal render preserved per request:
       <SettingsModal
@@ -369,7 +508,7 @@ function AppShell() {
         onRequestRelaunch={handleRelaunch}
       />
       */}
-    </div>
+    </AppShellLayout>
   )
 }
 

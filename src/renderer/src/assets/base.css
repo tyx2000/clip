@@ -106,12 +106,7 @@ body {
 }
 
 .theme-switching body,
-.theme-switching .app-shell,
-.theme-switching .pixel-card,
-.theme-switching .sidebar,
-.theme-switching .nav-item,
-.theme-switching .pixel-btn,
-.theme-switching .side-action {
+.theme-switching body * {
   transition:
     background-color 220ms ease,
     color 220ms ease,
@@ -132,7 +127,7 @@ body {
   }
 }
 
-.theme-switching .app-shell {
+.theme-switching body {
   animation: themePop 220ms ease;
 }
 

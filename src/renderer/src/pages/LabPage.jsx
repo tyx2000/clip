@@ -1,3 +1,13 @@
+import {
+  CardTitle,
+  ChipRow,
+  PageDesc,
+  PageGrid,
+  PageTitle,
+  PixelCard,
+  PixelCardLarge,
+  PixelChip
+} from '../styles/primitives'
 import useSharedStore from '../store/sharedStore'
 
 function LabPage() {
@@ -5,26 +15,26 @@ function LabPage() {
   const message = useSharedStore((state) => state.message)
 
   return (
-    <section className="page-grid">
-      <article className="pixel-card pixel-card-large">
-        <h1 className="page-title">Lab</h1>
-        <p className="page-desc">Route for testing IPC calls and shared-state reactions.</p>
-        <div className="chip-row">
-          <span className="pixel-chip">Counter: {count}</span>
-          <span className="pixel-chip">Message length: {message.length}</span>
-        </div>
-      </article>
-      <article className="pixel-card">
-        <h2 className="card-title">IPC Path</h2>
+    <PageGrid>
+      <PixelCardLarge>
+        <PageTitle>Lab</PageTitle>
+        <PageDesc>Route for testing IPC calls and shared-state reactions.</PageDesc>
+        <ChipRow>
+          <PixelChip>Counter: {count}</PixelChip>
+          <PixelChip>Message length: {message.length}</PixelChip>
+        </ChipRow>
+      </PixelCardLarge>
+      <PixelCard>
+        <CardTitle>IPC Path</CardTitle>
         <p>
           Renderer {'->'} preload API {'->'} ipcMain {'->'} persistent state {'->'} broadcast.
         </p>
-      </article>
-      <article className="pixel-card">
-        <h2 className="card-title">Window Scope</h2>
+      </PixelCard>
+      <PixelCard>
+        <CardTitle>Window Scope</CardTitle>
         <p>All opened windows subscribe to shared-state updates.</p>
-      </article>
-    </section>
+      </PixelCard>
+    </PageGrid>
   )
 }
 

@@ -1,19 +1,230 @@
 import PropTypes from 'prop-types'
 import { useMemo, useState } from 'react'
+import styled from 'styled-components'
+import { PixelButton } from '../styles/primitives'
 import useSettingsStore from '../store/settingsStore'
 import useThemeStore, { themeOptions } from '../store/themeStore'
+
+const SettingsModalRoot = styled.div`
+  width: min(980px, 92vw);
+  height: min(640px, 88vh);
+  border-radius: 14px;
+  background: var(--color-block-content);
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
+
+  ${({ $asWindow }) =>
+    $asWindow
+      ? `
+    width: 100%;
+    height: 100vh;
+    max-height: unset;
+    border-radius: 0;
+    border: 0;
+    box-shadow: none;
+  `
+      : ''}
+
+  @media (max-width: 820px) {
+    grid-template-columns: 1fr;
+    height: min(720px, 90vh);
+  }
+`
+
+const SettingsTabs = styled.aside`
+  border-right: 1px solid var(--line-soft);
+  background: var(--color-block-nav);
+  padding: 14px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+
+  @media (max-width: 820px) {
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+`
+
+const SettingsTabsTitle = styled.h3`
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+`
+
+const SecondaryButton = styled.button`
+  border: none;
+  border-radius: 9px;
+  background: var(--color-block-nav-item);
+  color: var(--color-text);
+  padding: 8px 10px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+`
+
+const TabButton = styled(SecondaryButton)`
+  background: ${({ $active }) =>
+    $active ? 'var(--color-block-nav-item-active)' : 'var(--color-block-nav-item)'};
+`
+
+const ResetButton = styled(SecondaryButton)`
+  margin-top: 10px;
+  color: #8a2c22;
+`
+
+const SettingsContent = styled.section`
+  padding: 16px;
+  overflow: auto;
+  border-left: 1px solid var(--line-soft);
+`
+
+const SettingsHead = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+`
+
+const PanelTitle = styled.h2`
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+`
+
+const SettingsList = styled.div`
+  display: grid;
+  gap: 12px;
+`
+
+const SettingsNotice = styled.div`
+  background: var(--color-block-card);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line-soft);
+`
+
+const SettingsNoticeText = styled.p`
+  margin: 0;
+  font-size: 13px;
+`
+
+const SettingsNoticeActions = styled.div`
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+`
+
+const SettingItemWrap = styled.div`
+  border-radius: 9px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  background: var(--color-block-card);
+  border: 1px solid var(--line-soft);
+
+  @media (max-width: 820px) {
+    grid-template-columns: 1fr;
+  }
+`
+
+const SettingLabel = styled.p`
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+`
+
+const SettingDesc = styled.p`
+  margin: 4px 0 0;
+  color: var(--color-text-soft);
+  font-size: 13px;
+`
+
+const SettingControl = styled.div`
+  min-width: 180px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+
+  @media (max-width: 820px) {
+    justify-content: flex-start;
+  }
+
+  input,
+  select,
+  button {
+    border: 1px solid var(--line-soft);
+    border-radius: 7px;
+    padding: 6px 9px;
+    background: var(--color-block-input);
+    color: var(--color-text);
+  }
+`
+
+const UpdateMeta = styled.div`
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+`
+
+const UpdateActions = styled.div`
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+`
+
+const UpdateErrorDetail = styled.p`
+  margin: 8px 0 0;
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #7f3d3d;
+  text-align: right;
+`
+
+const Pill = styled.span`
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: ${({ $success }) => ($success ? '#d8f2bc' : 'var(--color-block-chip)')};
+  color: ${({ $success }) => ($success ? '#23441e' : 'inherit')};
+`
+
+const SettingsWindowShell = styled.div``
+
+const SettingsOverlay = styled.div`
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 10, 10, 0.28);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+`
 
 const tabIds = ['general', 'account', 'notifications', 'privacy', 'advanced']
 
 function SettingItem({ label, description, children }) {
   return (
-    <div className="setting-item">
+    <SettingItemWrap>
       <div>
-        <p className="setting-label">{label}</p>
-        <p className="setting-desc">{description}</p>
+        <SettingLabel>{label}</SettingLabel>
+        <SettingDesc>{description}</SettingDesc>
       </div>
-      <div className="setting-control">{children}</div>
-    </div>
+      <SettingControl>{children}</SettingControl>
+    </SettingItemWrap>
   )
 }
 
@@ -125,51 +336,37 @@ function SettingsModal({
   }
 
   const content = (
-    <div className="settings-modal" onClick={(event) => event.stopPropagation()}>
-      <aside className="settings-tabs">
-        <h3>{dict.title}</h3>
+    <SettingsModalRoot $asWindow={asWindow} onClick={(event) => event.stopPropagation()}>
+      <SettingsTabs>
+        <SettingsTabsTitle>{dict.title}</SettingsTabsTitle>
         {tabIds.map((tabId) => (
-          <button
-            key={tabId}
-            className={`settings-tab-btn${activeTab === tabId ? ' active' : ''}`}
-            onClick={() => setActiveTab(tabId)}
-          >
+          <TabButton key={tabId} $active={activeTab === tabId} onClick={() => setActiveTab(tabId)}>
             {dict.tabs[tabId]}
-          </button>
+          </TabButton>
         ))}
-        <button className="settings-reset" onClick={resetSettings}>
-          {dict.reset}
-        </button>
-      </aside>
+        <ResetButton onClick={resetSettings}>{dict.reset}</ResetButton>
+      </SettingsTabs>
 
-      <section className="settings-content">
-        <div className="settings-head">
-          <h2>{panelTitle}</h2>
-          {asWindow ? null : (
-            <button className="settings-close" onClick={onClose}>
-              {dict.close}
-            </button>
-          )}
-        </div>
+      <SettingsContent>
+        <SettingsHead>
+          <PanelTitle>{panelTitle}</PanelTitle>
+          {asWindow ? null : <SecondaryButton onClick={onClose}>{dict.close}</SecondaryButton>}
+        </SettingsHead>
 
         {systemMessage ? (
-          <div className="settings-notice">
-            <p>{systemMessage}</p>
-            <div className="settings-notice-actions">
+          <SettingsNotice>
+            <SettingsNoticeText>{systemMessage}</SettingsNoticeText>
+            <SettingsNoticeActions>
               {restartRequired ? (
-                <button className="pixel-btn" onClick={onRequestRelaunch}>
-                  {dict.restart}
-                </button>
+                <PixelButton onClick={onRequestRelaunch}>{dict.restart}</PixelButton>
               ) : null}
-              <button className="settings-close" onClick={clearSystemMessage}>
-                {dict.dismiss}
-              </button>
-            </div>
-          </div>
+              <SecondaryButton onClick={clearSystemMessage}>{dict.dismiss}</SecondaryButton>
+            </SettingsNoticeActions>
+          </SettingsNotice>
         ) : null}
 
         {activeTab === 'general' ? (
-          <div className="settings-list">
+          <SettingsList>
             <SettingItem label="Theme" description="Switch the app theme.">
               <select value={theme} onChange={(event) => setTheme(event.target.value)}>
                 {themeOptions.map((option) => (
@@ -210,46 +407,32 @@ function SettingsModal({
             </SettingItem>
 
             <SettingItem label="App update" description="Check and install updates.">
-              <div className="update-meta">
-                <span className="pill">status: {updateStatus.status || 'idle'}</span>
-                <span className="pill">current: {updateStatus.currentVersion || '-'}</span>
-                <span className="pill">latest: {updateStatus.availableVersion || '-'}</span>
-                <span className="pill">
-                  progress: {Math.round(updateStatus.progressPercent || 0)}%
-                </span>
-                <span className="pill">checked: {updateStatus.lastCheckedAtLabel || 'never'}</span>
-                {updateStatus.errorCode ? (
-                  <span className="pill">error: {updateStatus.errorCode}</span>
+              <div>
+                <UpdateMeta>
+                  <Pill>status: {updateStatus.status || 'idle'}</Pill>
+                  <Pill>current: {updateStatus.currentVersion || '-'}</Pill>
+                  <Pill>latest: {updateStatus.availableVersion || '-'}</Pill>
+                  <Pill>progress: {Math.round(updateStatus.progressPercent || 0)}%</Pill>
+                  <Pill>checked: {updateStatus.lastCheckedAtLabel || 'never'}</Pill>
+                  {updateStatus.errorCode ? <Pill>error: {updateStatus.errorCode}</Pill> : null}
+                  <Pill>
+                    bytes: {Math.round((updateStatus.downloadedBytes || 0) / 1024)}KB /{' '}
+                    {Math.round((updateStatus.totalBytes || 0) / 1024)}KB
+                  </Pill>
+                  <Pill>speed: {Math.round((updateStatus.bytesPerSecond || 0) / 1024)}KB/s</Pill>
+                </UpdateMeta>
+                {updateStatus.errorDetail ? (
+                  <UpdateErrorDetail>{updateStatus.errorDetail}</UpdateErrorDetail>
                 ) : null}
-                <span className="pill">
-                  bytes: {Math.round((updateStatus.downloadedBytes || 0) / 1024)}KB /{' '}
-                  {Math.round((updateStatus.totalBytes || 0) / 1024)}KB
-                </span>
-                <span className="pill">
-                  speed: {Math.round((updateStatus.bytesPerSecond || 0) / 1024)}KB/s
-                </span>
-              </div>
-              {updateStatus.errorDetail ? (
-                <p className="update-error-detail">{updateStatus.errorDetail}</p>
-              ) : null}
-              <div className="update-actions">
-                <button className="pixel-btn" onClick={checkForUpdates}>
-                  Check
-                </button>
-                <button
-                  className="pixel-btn"
-                  onClick={downloadUpdate}
-                  disabled={!updateStatus.canDownload}
-                >
-                  Download
-                </button>
-                <button
-                  className="pixel-btn"
-                  onClick={installUpdate}
-                  disabled={!updateStatus.canInstall}
-                >
-                  Install
-                </button>
+                <UpdateActions>
+                  <PixelButton onClick={checkForUpdates}>Check</PixelButton>
+                  <PixelButton onClick={downloadUpdate} disabled={!updateStatus.canDownload}>
+                    Download
+                  </PixelButton>
+                  <PixelButton onClick={installUpdate} disabled={!updateStatus.canInstall}>
+                    Install
+                  </PixelButton>
+                </UpdateActions>
               </div>
             </SettingItem>
 
@@ -262,31 +445,25 @@ function SettingsModal({
                 }
               />
             </SettingItem>
-          </div>
+          </SettingsList>
         ) : null}
 
         {activeTab === 'account' ? (
-          <div className="settings-list">
+          <SettingsList>
             <SettingItem
               label="Account status"
               description={authUser?.name ? 'Signed in with Google.' : 'Not signed in.'}
             >
-              {authUser?.name ? (
-                <span className="pill success">{authUser.name}</span>
-              ) : (
-                <span className="pill">Guest</span>
-              )}
+              {authUser?.name ? <Pill $success>{authUser.name}</Pill> : <Pill>Guest</Pill>}
             </SettingItem>
 
             <SettingItem label="Google account" description="Manage sign-in state.">
               {authUser?.name ? (
-                <button className="pixel-btn" onClick={onRequestLogout}>
-                  Sign out
-                </button>
+                <PixelButton onClick={onRequestLogout}>Sign out</PixelButton>
               ) : (
-                <button className="pixel-btn" onClick={onRequestLogin} disabled={authLoading}>
+                <PixelButton onClick={onRequestLogin} disabled={authLoading}>
                   {authLoading ? 'Signing in...' : 'Sign in with Google'}
-                </button>
+                </PixelButton>
               )}
             </SettingItem>
 
@@ -311,11 +488,11 @@ function SettingsModal({
                 onChange={(event) => updateSetting('account', 'syncProfile', event.target.checked)}
               />
             </SettingItem>
-          </div>
+          </SettingsList>
         ) : null}
 
         {activeTab === 'notifications' ? (
-          <div className="settings-list">
+          <SettingsList>
             <SettingItem label="Desktop notifications" description="Enable system notifications.">
               <input
                 type="checkbox"
@@ -348,11 +525,11 @@ function SettingsModal({
                 <option value="weekly">Weekly</option>
               </select>
             </SettingItem>
-          </div>
+          </SettingsList>
         ) : null}
 
         {activeTab === 'privacy' ? (
-          <div className="settings-list">
+          <SettingsList>
             <SettingItem label="Usage analytics" description="Share anonymous usage analytics.">
               <input
                 type="checkbox"
@@ -388,11 +565,11 @@ function SettingsModal({
                 }
               />
             </SettingItem>
-          </div>
+          </SettingsList>
         ) : null}
 
         {activeTab === 'advanced' ? (
-          <div className="settings-list">
+          <SettingsList>
             <SettingItem
               label="Open DevTools by default"
               description="Open DevTools when creating a new app window."
@@ -447,21 +624,17 @@ function SettingsModal({
                 <option value="off">Off</option>
               </select>
             </SettingItem>
-          </div>
+          </SettingsList>
         ) : null}
-      </section>
-    </div>
+      </SettingsContent>
+    </SettingsModalRoot>
   )
 
   if (asWindow) {
-    return <div className="settings-window-shell">{content}</div>
+    return <SettingsWindowShell>{content}</SettingsWindowShell>
   }
 
-  return (
-    <div className="settings-modal-overlay" onClick={onClose}>
-      {content}
-    </div>
-  )
+  return <SettingsOverlay onClick={onClose}>{content}</SettingsOverlay>
 }
 
 SettingsModal.propTypes = {
