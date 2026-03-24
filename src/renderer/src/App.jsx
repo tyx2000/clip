@@ -1,522 +1,687 @@
-import { useEffect, useMemo, useState } from 'react'
-import { HashRouter, Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import styled from 'styled-components'
-import SettingsModal from './components/SettingsModal'
-import Versions from './components/Versions'
-import HomePage from './pages/HomePage'
-import LabPage from './pages/LabPage'
-import PixelBoardPage from './pages/PixelBoardPage'
-import ProfilePage from './pages/ProfilePage'
-import QuestLogPage from './pages/QuestLogPage'
-import useSettingsStore from './store/settingsStore'
-import useSharedStore from './store/sharedStore'
-import useThemeStore from './store/themeStore'
+import RecordingVideoCard from './components/RecordingVideoCard'
+import SourcePickerModal from './components/SourcePickerModal'
+import {
+  blobToDataUrl,
+  capturePosterFromBlob,
+  capturePosterFromVideo,
+  formatDuration,
+  getPreferredRecorderMimeType,
+  isLikelyPermissionError,
+  sleep
+} from './utils/recordingUtils'
 
-const AppShellLayout = styled.div`
-  width: 100%;
+const Page = styled.main`
   height: 100%;
+  padding: 22px;
   display: grid;
-  grid-template-columns: ${({ $isSettingsWindow }) =>
-    $isSettingsWindow ? 'minmax(0, 1fr)' : '250px minmax(0, 1fr)'};
-  gap: 16px;
-  padding: 16px;
-  max-width: ${({ $isSettingsWindow }) => ($isSettingsWindow ? 'none' : '1480px')};
-  margin: 0 auto;
-
-  .compact-sidebar & {
-    grid-template-columns: ${({ $isSettingsWindow }) =>
-      $isSettingsWindow ? 'minmax(0, 1fr)' : '210px minmax(0, 1fr)'};
-  }
-
-  @media (max-width: 980px) {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-    padding: 12px;
-  }
+  grid-template-rows: auto auto 1fr;
+  gap: 14px;
 `
 
-const Sidebar = styled.aside`
-  background: var(--color-block-nav);
-  border-radius: 14px;
-  padding: 12px;
+const TopBar = styled.section`
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 12px;
   border: 1px solid var(--line-soft);
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
-
-  @media (max-width: 980px) {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
+  background: var(--color-block-card-strong);
 `
 
-const BrandCard = styled.div`
-  background: var(--color-block-brand);
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 12px;
-  border: 1px solid var(--line-soft);
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
-`
-
-const BrandTitle = styled.h1`
-  margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-`
-
-const BrandSub = styled.p`
-  margin: 6px 0 0;
-  color: var(--color-text-soft);
-  font-size: 12px;
-`
-
-const NavList = styled.nav`
+const TitleGroup = styled.div`
   display: grid;
-  gap: 8px;
+  gap: 6px;
 `
 
-const NavItem = styled(NavLink)`
+const Title = styled.h1`
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.2;
+`
+
+const Subtitle = styled.p`
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 13px;
+`
+
+const TopActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+`
+
+const RecordTimeBadge = styled.span`
+  min-width: 68px;
+  text-align: center;
   border-radius: 10px;
   padding: 9px 12px;
-  text-decoration: none;
+  border: 1px solid ${({ $active }) => ($active ? '#fecaca' : 'var(--line-soft)')};
+  background: ${({ $active }) => ($active ? '#fef2f2' : 'var(--color-block-input)')};
+  color: ${({ $active }) => ($active ? '#b91c1c' : 'var(--color-text)')};
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+`
+
+const Button = styled.button`
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 9px 12px;
+  min-width: 112px;
+  background: var(--color-block-input);
   color: var(--color-text);
   font-weight: 600;
-  background: var(--color-block-nav-item);
-  border: 1px solid transparent;
-  transition:
-    transform 150ms ease,
-    background-color 150ms ease,
-    border-color 150ms ease,
-    color 150ms ease;
-
-  &:hover {
-    transform: translateY(-1px);
-    border-color: var(--line-soft);
-  }
-
-  &[aria-current='page'] {
-    background: var(--color-block-nav-item-active);
-    border-color: var(--line-soft);
-    font-weight: 700;
-  }
-`
-
-const SidebarBottom = styled.div`
-  margin-top: auto;
-  display: grid;
-  gap: 10px;
-
-  @media (max-width: 980px) {
-    margin-top: 0;
-  }
-`
-
-const SideAction = styled.button`
-  width: 100%;
-  border: none;
-  border-radius: 10px;
-  padding: 9px 12px;
-  font-weight: 600;
-  background: var(--color-block-action);
-  color: var(--color-button-text);
   cursor: pointer;
 
   &:disabled {
-    opacity: 0.7;
+    opacity: 0.6;
     cursor: not-allowed;
   }
 `
 
-const AuthError = styled.p`
-  margin: 0;
-  border-radius: 10px;
-  background: #ffe6e6;
-  color: #8f3e3e;
-  padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.4;
+const RecordButton = styled(Button)`
+  border: none;
+  background: ${({ $active }) => ($active ? '#b42318' : 'var(--color-block-button)')};
+  color: #ffffff;
 `
 
-const ContentArea = styled.main`
-  border-radius: 14px;
-  background: var(--color-block-content);
-  padding: ${({ $isSettingsWindow }) => ($isSettingsWindow ? '0' : '22px')};
-  display: grid;
-  grid-template-rows: ${({ $isSettingsWindow }) => ($isSettingsWindow ? '1fr' : '1fr auto')};
-  overflow: ${({ $isSettingsWindow }) => ($isSettingsWindow ? 'hidden' : 'auto')};
+const StatusCard = styled.section`
+  border-radius: 12px;
   border: 1px solid var(--line-soft);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
-
-  &:has(section[data-page='home']) {
-    overflow: hidden;
-  }
+  background: var(--color-block-card);
+  padding: 12px 14px;
+  display: grid;
+  gap: 4px;
 `
 
-const VersionsWrap = styled.div`
-  margin-top: 14px;
+const StatusLine = styled.p`
+  margin: 0;
+  font-size: 13px;
 `
 
-const navItems = [
-  { to: '/home', key: 'home' },
-  { to: '/pixel-board', key: 'pixelBoard' },
-  { to: '/quest-log', key: 'questLog' },
-  { to: '/lab', key: 'lab' },
-  { to: '/profile', key: 'profile' }
-]
+const StatusActionButton = styled(Button)`
+  width: fit-content;
+  margin-top: 4px;
+`
 
-const ACTIVITY_REPORT_INTERVAL_MS = 60 * 1000
+const ListWrap = styled.section`
+  border-radius: 12px;
+  border: 1px solid var(--line-soft);
+  background: var(--color-block-card);
+  padding: 14px;
+`
 
-function AppShell() {
-  const location = useLocation()
-  const hydrate = useSharedStore((state) => state.hydrate)
-  const syncFromMain = useSharedStore((state) => state.syncFromMain)
-  const theme = useThemeStore((state) => state.theme)
-  const hydrateTheme = useThemeStore((state) => state.hydrateFromMain)
-  const subscribeTheme = useThemeStore((state) => state.subscribeTheme)
+const ListHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+`
 
-  const settings = useSettingsStore((state) => state.settings)
-  const hydrateAppSettings = useSettingsStore((state) => state.hydrateFromMain)
-  const hydrateUpdateStatus = useSettingsStore((state) => state.hydrateUpdateStatus)
-  const subscribeUpdateStatus = useSettingsStore((state) => state.subscribeUpdateStatus)
+const VideosGrid = styled.div`
+  min-height: 320px;
+  display: grid;
+  place-items: ${({ $hasItems }) => ($hasItems ? 'stretch' : 'center')};
+`
 
-  // Legacy modal state preserved per request:
-  // const [settingsOpen, setSettingsOpen] = useState(false)
-  const [authUser, setAuthUser] = useState(null)
-  const [authLoading, setAuthLoading] = useState(false)
-  const [authError, setAuthError] = useState('')
+const SectionTitle = styled.h2`
+  margin: 0;
+  font-size: 16px;
+`
 
-  const windowRole = useMemo(() => {
-    return new URLSearchParams(window.location.search).get('windowRole') || 'main'
+const EmptyState = styled.p`
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-soft);
+  text-align: center;
+`
+
+const RecordingGrid = styled.div`
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  align-items: start;
+  gap: 12px;
+`
+
+function App() {
+  const [recordings, setRecordings] = useState([])
+  const [isLoadingList, setIsLoadingList] = useState(true)
+  const [recordingPosters, setRecordingPosters] = useState({})
+
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerLoading, setPickerLoading] = useState(false)
+  const [pickerSources, setPickerSources] = useState([])
+  const [pickerSelectedSourceId, setPickerSelectedSourceId] = useState('')
+
+  const [recordState, setRecordState] = useState('idle')
+  const [elapsedSec, setElapsedSec] = useState(0)
+  const [statusMessage, setStatusMessage] = useState('准备就绪。')
+  const [showPermissionSettingsAction, setShowPermissionSettingsAction] = useState(false)
+
+  const mediaRecorderRef = useRef(null)
+  const mediaStreamRef = useRef(null)
+  const chunksRef = useRef([])
+  const timerRef = useRef(null)
+  const startedAtRef = useRef(0)
+
+  const preferredMimeType = useMemo(() => getPreferredRecorderMimeType(), [])
+  const isRecording = recordState === 'recording'
+  const isBusy = recordState === 'starting' || recordState === 'saving'
+
+  const stopTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
   }, [])
 
-  const locale = settings.general.language
-  const text = useMemo(
-    () =>
-      ({
-        'en-US': {
-          appTitle: 'Pixel Hub',
-          window: 'Window',
-          settings: 'Settings',
-          nav: {
-            home: 'Home',
-            pixelBoard: 'Pixel Board',
-            questLog: 'Quest Log',
-            lab: 'Lab',
-            profile: 'Profile'
-          },
-          signIn: 'Sign in with Google',
-          signingIn: 'Signing in...'
-        },
-        'zh-CN': {
-          appTitle: '像素中心',
-          window: '窗口',
-          settings: '设置',
-          nav: {
-            home: '首页',
-            pixelBoard: '像素看板',
-            questLog: '任务日志',
-            lab: '实验室',
-            profile: '个人中心'
-          },
-          signIn: '使用 Google 登录',
-          signingIn: '登录中...'
-        },
-        'ja-JP': {
-          appTitle: 'ピクセルハブ',
-          window: 'ウィンドウ',
-          settings: '設定',
-          nav: {
-            home: 'ホーム',
-            pixelBoard: 'ピクセルボード',
-            questLog: 'クエストログ',
-            lab: 'ラボ',
-            profile: 'プロフィール'
-          },
-          signIn: 'Google でログイン',
-          signingIn: 'ログイン中...'
+  const releaseStream = useCallback(() => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop())
+      mediaStreamRef.current = null
+    }
+  }, [])
+
+  const resetRecorderState = useCallback(() => {
+    chunksRef.current = []
+    mediaRecorderRef.current = null
+    stopTimer()
+    releaseStream()
+    setElapsedSec(0)
+    setRecordState('idle')
+  }, [releaseStream, stopTimer])
+
+  const loadRecordings = useCallback(async () => {
+    setIsLoadingList(true)
+
+    try {
+      const result = await window.api.listScreenRecordings()
+      if (result?.ok) {
+        setRecordings(Array.isArray(result.items) ? result.items : [])
+      } else {
+        setStatusMessage(result?.message || '读取录屏列表失败。')
+      }
+    } catch (error) {
+      setStatusMessage(`读取录屏列表失败：${error?.message || '未知错误。'}`)
+    } finally {
+      setIsLoadingList(false)
+    }
+  }, [])
+
+  const getScreenRecordingPermissionStatusSafe = useCallback(async () => {
+    if (typeof window.api?.getScreenRecordingPermissionStatus !== 'function') {
+      return {
+        ok: false,
+        message: 'Permission API unavailable. Please restart the Electron app process.'
+      }
+    }
+
+    return window.api.getScreenRecordingPermissionStatus()
+  }, [])
+
+  const applyPermissionGuidance = useCallback(
+    async (error) => {
+      const baseMessage = `Unable to start screen recording: ${error?.message || 'Unknown error.'}`
+
+      try {
+        const permissionResult = await getScreenRecordingPermissionStatusSafe()
+        if (!permissionResult?.ok) {
+          setShowPermissionSettingsAction(false)
+          setStatusMessage(baseMessage)
+          return
         }
-      })[locale] || {
-        appTitle: 'Pixel Hub',
-        window: 'Window',
-        settings: 'Settings',
-        nav: {
-          home: 'Home',
-          pixelBoard: 'Pixel Board',
-          questLog: 'Quest Log',
-          lab: 'Lab',
-          profile: 'Profile'
-        },
-        signIn: 'Sign in with Google',
-        signingIn: 'Signing in...'
-      },
-    [locale]
+
+        const permissionStatus = permissionResult.status || 'unknown'
+        const canOpenSettings = Boolean(permissionResult.canOpenSettings)
+        const shouldShowSettingsAction =
+          canOpenSettings &&
+          (permissionStatus === 'denied' ||
+            permissionStatus === 'restricted' ||
+            permissionStatus === 'not-determined' ||
+            Boolean(permissionResult.needsSettings))
+
+        setShowPermissionSettingsAction(shouldShowSettingsAction)
+
+        if (shouldShowSettingsAction) {
+          const guidance =
+            permissionStatus === 'not-determined'
+              ? '请允许系统的屏幕录制授权；若没有弹窗，请点“打开系统权限设置”，授权后重启应用。'
+              : '当前系统已拒绝屏幕录制权限，请点“打开系统权限设置”授权后重启应用。'
+          setStatusMessage(`${baseMessage} ${guidance}（status: ${permissionStatus}）`)
+          return
+        }
+
+        setStatusMessage(`${baseMessage}（status: ${permissionStatus}）`)
+      } catch {
+        setShowPermissionSettingsAction(false)
+        setStatusMessage(baseMessage)
+      }
+    },
+    [getScreenRecordingPermissionStatusSafe]
   )
 
-  useEffect(() => {
-    hydrateAppSettings()
-  }, [hydrateAppSettings])
-
-  useEffect(() => {
-    hydrateTheme()
-    const unsubscribe = subscribeTheme()
-    return () => {
-      unsubscribe()
-    }
-  }, [hydrateTheme, subscribeTheme])
-
-  useEffect(() => {
-    hydrateUpdateStatus()
-    const unsubscribe = subscribeUpdateStatus()
-    return () => {
-      unsubscribe()
-    }
-  }, [hydrateUpdateStatus, subscribeUpdateStatus])
-
-  useEffect(() => {
-    let unsubscribe = () => {}
-
-    const bootstrap = async () => {
-      await hydrate()
-      unsubscribe = window.api.onSharedStateUpdated(syncFromMain)
-    }
-
-    bootstrap()
-
-    return () => {
-      unsubscribe()
-    }
-  }, [hydrate, syncFromMain])
-
-  useEffect(() => {
-    let unsubscribe = () => {}
-
-    const bootstrapUser = async () => {
-      const user = await window.api.getAuthUser()
-      setAuthUser(user)
-      unsubscribe = window.api.onAuthUserUpdated((nextUser) => {
-        setAuthUser(nextUser)
-        setAuthLoading(false)
-      })
-    }
-
-    bootstrapUser()
-
-    return () => {
-      unsubscribe()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!authUser?.name) {
-      return
-    }
-
-    let lastSent = 0
-
-    const reportActivity = async () => {
-      const now = Date.now()
-      if (now - lastSent < ACTIVITY_REPORT_INTERVAL_MS) {
+  const beginRecordingWithSource = useCallback(
+    async (sourceId) => {
+      if (!sourceId) {
+        setStatusMessage('请先选择要录制的屏幕或窗口。')
         return
       }
 
-      lastSent = now
-      const nextUser = await window.api.touchAuthActivity()
-      setAuthUser(nextUser)
-    }
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        reportActivity()
+      if (!window.navigator.mediaDevices?.getDisplayMedia || !window.MediaRecorder) {
+        setStatusMessage('当前环境不支持录屏，请确认 Electron 录屏权限配置。')
+        return
       }
-    }
 
-    const events = ['pointerdown', 'keydown', 'mousemove', 'wheel', 'touchstart']
-    for (const eventName of events) {
-      window.addEventListener(eventName, reportActivity, { passive: true })
-    }
-    document.addEventListener('visibilitychange', onVisibilityChange)
-
-    reportActivity()
-
-    return () => {
-      for (const eventName of events) {
-        window.removeEventListener(eventName, reportActivity)
+      if (typeof window.api?.setScreenRecordingSource === 'function') {
+        const setResult = await window.api.setScreenRecordingSource({ sourceId })
+        if (!setResult?.ok) {
+          setStatusMessage(setResult?.message || '设置录制源失败。')
+          return
+        }
       }
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-    }
-  }, [authUser?.name])
 
-  useEffect(() => {
-    const root = document.documentElement
-    root.setAttribute('data-theme', theme)
-    root.setAttribute('lang', locale)
-    root.classList.add('theme-switching')
+      setShowPermissionSettingsAction(false)
+      setRecordState('starting')
+      setStatusMessage('正在请求屏幕权限...')
 
-    const timer = window.setTimeout(() => {
-      root.classList.remove('theme-switching')
-    }, 420)
+      try {
+        const permissionResult = await getScreenRecordingPermissionStatusSafe()
+        if (
+          permissionResult?.ok &&
+          permissionResult.canOpenSettings &&
+          (permissionResult.status === 'denied' || permissionResult.status === 'restricted')
+        ) {
+          setRecordState('idle')
+          setShowPermissionSettingsAction(true)
+          setStatusMessage(
+            `系统屏幕录制权限为 ${permissionResult.status}，请先打开系统权限设置授权，再重新开始录屏。`
+          )
+          return
+        }
 
-    return () => {
-      window.clearTimeout(timer)
-      root.classList.remove('theme-switching')
-    }
-  }, [theme, locale])
+        const stream = await window.navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false
+        })
 
-  useEffect(() => {
-    const root = document.documentElement
-    root.classList.toggle('compact-sidebar', settings.general.compactSidebar)
-  }, [settings.general.compactSidebar])
+        const recorder = preferredMimeType
+          ? new window.MediaRecorder(stream, { mimeType: preferredMimeType })
+          : new window.MediaRecorder(stream)
 
-  const handleUserClick = async () => {
-    if (authUser?.name || authLoading) {
+        mediaStreamRef.current = stream
+        mediaRecorderRef.current = recorder
+        chunksRef.current = []
+        startedAtRef.current = Date.now()
+        setElapsedSec(0)
+        setRecordState('recording')
+        setStatusMessage('录屏中...')
+
+        stopTimer()
+        timerRef.current = setInterval(() => {
+          setElapsedSec(Math.floor((Date.now() - startedAtRef.current) / 1000))
+        }, 1000)
+
+        const [videoTrack] = stream.getVideoTracks()
+        if (videoTrack) {
+          videoTrack.addEventListener('ended', () => {
+            if (recorder.state === 'recording') {
+              recorder.stop()
+            }
+          })
+        }
+
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            chunksRef.current.push(event.data)
+          }
+        }
+
+        recorder.onerror = (event) => {
+          const message = event?.error?.message || '未知录制错误。'
+          setStatusMessage(`录屏失败：${message}`)
+        }
+
+        recorder.onstop = async () => {
+          setRecordState('saving')
+          setStatusMessage('正在保存录屏...')
+          stopTimer()
+
+          try {
+            if (!chunksRef.current.length) {
+              setStatusMessage('未采集到有效视频数据。')
+              return
+            }
+
+            const fallbackMimeType = preferredMimeType || 'video/webm'
+            const blob = new Blob(chunksRef.current, {
+              type: recorder.mimeType || fallbackMimeType
+            })
+            const dataUrl = await blobToDataUrl(blob)
+            const posterDataUrl = await capturePosterFromBlob(blob)
+            const saveResult = await window.api.saveScreenRecording({
+              dataUrl,
+              mimeType: blob.type || fallbackMimeType,
+              posterDataUrl
+            })
+
+            if (!saveResult?.ok || !saveResult.item) {
+              setStatusMessage(saveResult?.message || '保存录屏失败。')
+              await loadRecordings()
+              return
+            }
+
+            setRecordings((previous) => [saveResult.item, ...previous])
+            if (saveResult.item.posterUrl) {
+              setRecordingPosters((previous) => ({
+                ...previous,
+                [saveResult.item.path]: saveResult.item.posterUrl
+              }))
+            }
+            setStatusMessage(`录屏已保存：${saveResult.item.name}`)
+          } catch (error) {
+            setStatusMessage(`保存录屏失败：${error?.message || '未知错误。'}`)
+          } finally {
+            resetRecorderState()
+          }
+        }
+
+        recorder.start(1000)
+      } catch (error) {
+        resetRecorderState()
+        if (isLikelyPermissionError(error)) {
+          await applyPermissionGuidance(error)
+          return
+        }
+
+        setShowPermissionSettingsAction(false)
+        setStatusMessage(`Unable to start screen recording: ${error?.message || 'Unknown error.'}`)
+      }
+    },
+    [
+      applyPermissionGuidance,
+      getScreenRecordingPermissionStatusSafe,
+      loadRecordings,
+      preferredMimeType,
+      resetRecorderState,
+      stopTimer
+    ]
+  )
+
+  const openSourcePicker = useCallback(async () => {
+    if (isBusy || isRecording) {
       return
     }
 
-    setAuthLoading(true)
-    setAuthError('')
+    if (typeof window.api?.getScreenRecordingSources !== 'function') {
+      setStatusMessage('录制源 API 不可用，请重启 Electron 应用进程。')
+      return
+    }
+
+    setPickerOpen(true)
+    setPickerLoading(true)
+    setPickerSources([])
+    const minimumLoading = sleep(1500)
 
     try {
-      const user = await window.api.loginWithGoogle()
-      setAuthUser(user)
-      if (!user) {
-        setAuthError('Sign-in was cancelled or timed out. Please try again.')
+      const result = await window.api.getScreenRecordingSources()
+      await minimumLoading
+      if (!result?.ok) {
+        setStatusMessage(result?.message || '读取录制源失败。')
+        setPickerSources([])
+        setPickerSelectedSourceId('')
+        return
       }
+
+      const sources = Array.isArray(result.sources) ? result.sources : []
+      setPickerSources(sources)
+
+      if (!sources.length) {
+        setPickerSelectedSourceId('')
+        return
+      }
+
+      const defaultSourceId = sources.find((item) => item.type === 'screen')?.id || sources[0].id
+      setPickerSelectedSourceId(defaultSourceId)
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Google sign-in failed. Please check configuration.'
-      setAuthError(message)
+      await minimumLoading
+      setStatusMessage(`读取录制源失败：${error?.message || '未知错误。'}`)
+      setPickerSources([])
+      setPickerSelectedSourceId('')
     } finally {
-      setAuthLoading(false)
+      setPickerLoading(false)
     }
-  }
-
-  const handleLogout = async () => {
-    await window.api.logout()
-    setAuthUser(null)
-  }
-
-  const handleRelaunch = async () => {
-    await window.api.relaunchApp()
-  }
-
-  const userButtonLabel = authUser?.name
-    ? `User: ${authUser.name}`
-    : authLoading
-      ? text.signingIn
-      : text.signIn
-
-  const isSettingsWindow = windowRole === 'settings'
-
-  const openSettingsWindow = async () => {
-    await window.api.createSettingsWindow()
-  }
-
-  const routeTitleMap = useMemo(() => {
-    return {
-      '/': text.nav.home,
-      '/home': text.nav.home,
-      '/pixel-board': text.nav.pixelBoard,
-      '/quest-log': text.nav.questLog,
-      '/lab': text.nav.lab,
-      '/profile': text.nav.profile,
-      '/settings': text.settings
-    }
-  }, [text])
+  }, [isBusy, isRecording])
 
   useEffect(() => {
-    const routeTitle = routeTitleMap[location.pathname] || text.appTitle
-    const fullTitle = `${routeTitle} - ${text.appTitle}`
-    document.title = fullTitle
-    window.api.setWindowTitle(fullTitle)
-  }, [location.pathname, routeTitleMap, text.appTitle])
+    document.title = 'Clip Recorder'
+    loadRecordings()
+
+    return () => {
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop()
+      }
+      resetRecorderState()
+    }
+  }, [loadRecordings, resetRecorderState])
+
+  useEffect(() => {
+    setRecordingPosters((previous) => {
+      const next = {}
+      for (const item of recordings) {
+        if (item.posterUrl) {
+          next[item.path] = item.posterUrl
+          continue
+        }
+
+        if (previous[item.path]) {
+          next[item.path] = previous[item.path]
+        }
+      }
+
+      const previousEntries = Object.entries(previous)
+      const nextEntries = Object.entries(next)
+      if (previousEntries.length !== nextEntries.length) {
+        return next
+      }
+
+      for (const [path, poster] of nextEntries) {
+        if (previous[path] !== poster) {
+          return next
+        }
+      }
+
+      return previous
+    })
+  }, [recordings])
+
+  const handleVideoLoadedData = useCallback((path, videoElement) => {
+    setRecordingPosters((previous) => {
+      if (previous[path]) {
+        return previous
+      }
+
+      const poster = capturePosterFromVideo(videoElement)
+      if (!poster) {
+        return previous
+      }
+
+      return {
+        ...previous,
+        [path]: poster
+      }
+    })
+  }, [])
+
+  const stopRecording = () => {
+    const recorder = mediaRecorderRef.current
+
+    if (!recorder || recorder.state !== 'recording') {
+      return
+    }
+
+    setStatusMessage('正在停止录屏...')
+    recorder.stop()
+  }
+
+  const handleRecordButtonClick = () => {
+    if (isRecording) {
+      stopRecording()
+      return
+    }
+
+    openSourcePicker()
+  }
+
+  const handleConfirmSourceAndStart = async () => {
+    if (!pickerSelectedSourceId || isBusy || pickerLoading) {
+      return
+    }
+
+    const sourceId = pickerSelectedSourceId
+    setPickerOpen(false)
+    await beginRecordingWithSource(sourceId)
+  }
+
+  const handleCancelPicker = () => {
+    if (isBusy) {
+      return
+    }
+    setPickerOpen(false)
+  }
+
+  const handleOpenRecording = async (path) => {
+    const result = await window.api.openScreenRecording({ path })
+    if (!result?.ok) {
+      setStatusMessage(result?.message || '打开录屏失败。')
+    }
+  }
+
+  const handleRevealRecording = async (path) => {
+    const result = await window.api.revealScreenRecording({ path })
+    if (!result?.ok) {
+      setStatusMessage(result?.message || '定位文件失败。')
+    }
+  }
+
+  const handleDeleteRecording = async (path) => {
+    if (typeof window.api?.deleteScreenRecording !== 'function') {
+      setStatusMessage('删除 API 不可用，请重启 Electron 应用进程。')
+      return
+    }
+
+    const confirmed = window.confirm('确定删除这个录屏文件吗？该操作不可恢复。')
+    if (!confirmed) {
+      return
+    }
+
+    const result = await window.api.deleteScreenRecording({ path })
+    if (!result?.ok) {
+      setStatusMessage(result?.message || '删除录屏失败。')
+      return
+    }
+
+    setRecordings((previous) => previous.filter((item) => item.path !== path))
+    setStatusMessage('录屏已删除。')
+  }
+
+  const handleOpenPermissionSettings = async () => {
+    if (typeof window.api?.openScreenRecordingPermissionSettings !== 'function') {
+      setStatusMessage('权限设置 API 不可用，请重启 Electron 应用进程后重试。')
+      return
+    }
+
+    const result = await window.api.openScreenRecordingPermissionSettings()
+    if (result?.ok) {
+      setStatusMessage('已打开系统权限设置，请授予屏幕录制权限后重启应用。')
+      return
+    }
+
+    setStatusMessage(result?.message || '无法打开系统权限设置，请手动前往系统设置授权。')
+  }
 
   return (
-    <AppShellLayout $isSettingsWindow={isSettingsWindow}>
-      {isSettingsWindow ? null : (
-        <Sidebar>
-          <BrandCard>
-            <BrandTitle>{text.appTitle}</BrandTitle>
-            <BrandSub>
-              {text.window}: {windowRole}
-            </BrandSub>
-          </BrandCard>
+    <>
+      <Page>
+        <TopBar>
+          <TitleGroup>
+            <Title>屏幕录制</Title>
+            <Subtitle>点击开始录制后选择屏幕或窗口，确认后开始录制。</Subtitle>
+          </TitleGroup>
+          <TopActions>
+            <RecordTimeBadge $active={isRecording}>{formatDuration(elapsedSec)}</RecordTimeBadge>
+            <RecordButton
+              type="button"
+              onClick={handleRecordButtonClick}
+              disabled={isBusy}
+              $active={isRecording}
+            >
+              {isRecording ? '停止录制' : isBusy ? '处理中...' : '开始录制'}
+            </RecordButton>
+          </TopActions>
+        </TopBar>
 
-          <NavList>
-            {navItems.map((item) => (
-              <NavItem key={item.to} to={item.to}>
-                {text.nav[item.key]}
-              </NavItem>
-            ))}
-          </NavList>
+        {/* <StatusCard>
+          <StatusLine>
+            状态：<strong>{recordState}</strong>
+          </StatusLine>
+          <StatusLine>时长：{formatDuration(elapsedSec)}</StatusLine>
+          <StatusLine>{statusMessage}</StatusLine>
+          {showPermissionSettingsAction ? (
+            <StatusActionButton type="button" onClick={handleOpenPermissionSettings}>
+              打开系统权限设置
+            </StatusActionButton>
+          ) : null}
+        </StatusCard> */}
 
-          <SidebarBottom>
-            <SideAction onClick={handleUserClick} disabled={authLoading}>
-              {userButtonLabel}
-            </SideAction>
-            {authError ? <AuthError>{authError}</AuthError> : null}
-            <SideAction onClick={openSettingsWindow}>{text.settings}</SideAction>
-            {/* Legacy modal button preserved per request:
-            <SideAction onClick={() => setSettingsOpen(true)}>Settings</SideAction>
-            */}
-          </SidebarBottom>
-        </Sidebar>
-      )}
+        <ListWrap>
+          <ListHeader>
+            <SectionTitle>已录制视频</SectionTitle>
+            <Button type="button" onClick={loadRecordings} disabled={isLoadingList || isBusy}>
+              {isLoadingList ? '加载中...' : '刷新列表'}
+            </Button>
+          </ListHeader>
 
-      <ContentArea $isSettingsWindow={isSettingsWindow}>
-        <Routes>
-          <Route path="/" element={<Navigate to="/home" replace />} />
-          <Route path="/home" element={<HomePage />} />
-          <Route path="/pixel-board" element={<PixelBoardPage />} />
-          <Route path="/quest-log" element={<QuestLogPage />} />
-          <Route path="/lab" element={<LabPage />} />
-          <Route path="/profile" element={<ProfilePage />} />
-          <Route
-            path="/settings"
-            element={
-              <SettingsModal
-                asWindow
-                authUser={authUser}
-                authLoading={authLoading}
-                onClose={() => window.close()}
-                onRequestLogin={handleUserClick}
-                onRequestLogout={handleLogout}
-                onRequestRelaunch={handleRelaunch}
-              />
-            }
-          />
-        </Routes>
+          <VideosGrid $hasItems={!isLoadingList && recordings.length > 0}>
+            {isLoadingList ? (
+              <EmptyState>正在加载录屏列表...</EmptyState>
+            ) : recordings.length === 0 ? (
+              <EmptyState>暂无录屏文件</EmptyState>
+            ) : (
+              <RecordingGrid>
+                {recordings.map((item) => (
+                  <RecordingVideoCard
+                    key={item.path}
+                    item={item}
+                    poster={recordingPosters[item.path]}
+                    onVideoLoadedData={handleVideoLoadedData}
+                    onOpen={handleOpenRecording}
+                    onReveal={handleRevealRecording}
+                    onDelete={handleDeleteRecording}
+                  />
+                ))}
+              </RecordingGrid>
+            )}
+          </VideosGrid>
+        </ListWrap>
+      </Page>
 
-        {isSettingsWindow ? null : (
-          <VersionsWrap>
-            <Versions />
-          </VersionsWrap>
-        )}
-      </ContentArea>
-
-      {/* Legacy modal render preserved per request:
-      <SettingsModal
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        authUser={authUser}
-        authLoading={authLoading}
-        onRequestLogin={handleUserClick}
-        onRequestLogout={handleLogout}
-        onRequestRelaunch={handleRelaunch}
+      <SourcePickerModal
+        open={pickerOpen}
+        loading={pickerLoading}
+        sources={pickerSources}
+        selectedSourceId={pickerSelectedSourceId}
+        isBusy={isBusy}
+        onSelect={setPickerSelectedSourceId}
+        onCancel={handleCancelPicker}
+        onConfirm={handleConfirmSourceAndStart}
       />
-      */}
-    </AppShellLayout>
-  )
-}
-
-function App() {
-  return (
-    <HashRouter>
-      <AppShell />
-    </HashRouter>
+    </>
   )
 }
 
