@@ -151,18 +151,6 @@ const PickerMeta = styled.p`
   color: var(--color-text-soft);
 `
 
-const SelectedTag = styled.span`
-  display: inline-block;
-  width: fit-content;
-  font-size: 11px;
-  font-weight: 700;
-  color: #1d4ed8;
-  background: #dbeafe;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  padding: 2px 8px;
-`
-
 function SourcePickerModal({
   open,
   loading,
@@ -226,7 +214,6 @@ function SourcePickerModal({
                       {source.name}
                     </PickerName>
                     <PickerMeta>{source.type === 'screen' ? '屏幕' : '窗口'}</PickerMeta>
-                    {/* {source.id === selectedSourceId ? <SelectedTag>已选中</SelectedTag> : null} */}
                   </PickerItem>
                 ))}
               </PickerGrid>

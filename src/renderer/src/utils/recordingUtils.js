@@ -88,13 +88,16 @@ export async function capturePosterFromBlob(blob, quality = 0.76) {
   video.playsInline = true
 
   const objectUrl = URL.createObjectURL(blob)
-  video.src = objectUrl
 
   const waitForFrame = async () => {
     await new Promise((resolve, reject) => {
       let resolved = false
+      const timer = setTimeout(() => {
+        onError()
+      }, 4000)
 
       const cleanup = () => {
+        clearTimeout(timer)
         video.removeEventListener('error', onError)
         video.removeEventListener('loadedmetadata', onLoadedMetadata)
         video.removeEventListener('loadeddata', onLoadedData)
@@ -151,6 +154,8 @@ export async function capturePosterFromBlob(blob, quality = 0.76) {
 
       video.addEventListener('error', onError, { once: true })
       video.addEventListener('loadedmetadata', onLoadedMetadata, { once: true })
+      video.src = objectUrl
+      video.load()
     })
   }
 

@@ -139,16 +139,21 @@ function DeleteIcon() {
 }
 
 function RecordingVideoCard({ item, poster, onVideoLoadedData, onOpen, onReveal, onDelete }) {
+  const hasPoster = Boolean(poster)
+
   return (
     <Card>
       <FileName title={item.name}>{middleEllipsis(item.name, 40)}</FileName>
       <PreviewWrap>
         <VideoPreview
+          key={`${item.path}-${hasPoster ? 'poster' : 'noposter'}`}
           controls
-          preload="metadata"
+          preload={hasPoster ? 'none' : 'metadata'}
           poster={poster || undefined}
           src={item.fileUrl}
-          onLoadedData={(event) => onVideoLoadedData(item.path, event.currentTarget)}
+          onLoadedData={
+            hasPoster ? undefined : (event) => onVideoLoadedData(item.path, event.currentTarget)
+          }
         />
         <FloatingActions>
           <IconButton

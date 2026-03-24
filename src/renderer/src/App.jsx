@@ -90,24 +90,24 @@ const RecordButton = styled(Button)`
   color: #ffffff;
 `
 
-const StatusCard = styled.section`
-  border-radius: 12px;
-  border: 1px solid var(--line-soft);
-  background: var(--color-block-card);
-  padding: 12px 14px;
-  display: grid;
-  gap: 4px;
-`
+// const StatusCard = styled.section`
+//   border-radius: 12px;
+//   border: 1px solid var(--line-soft);
+//   background: var(--color-block-card);
+//   padding: 12px 14px;
+//   display: grid;
+//   gap: 4px;
+// `
 
-const StatusLine = styled.p`
-  margin: 0;
-  font-size: 13px;
-`
+// const StatusLine = styled.p`
+//   margin: 0;
+//   font-size: 13px;
+// `
 
-const StatusActionButton = styled(Button)`
-  width: fit-content;
-  margin-top: 4px;
-`
+// const StatusActionButton = styled(Button)`
+//   width: fit-content;
+//   margin-top: 4px;
+// `
 
 const ListWrap = styled.section`
   border-radius: 12px;
