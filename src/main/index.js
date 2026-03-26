@@ -7,7 +7,9 @@ import {
   shell,
   systemPreferences
 } from 'electron'
+import { existsSync } from 'fs'
 import { mkdir, readdir, stat, unlink, writeFile } from 'fs/promises'
+import { spawn } from 'node:child_process'
 import { dirname, join, resolve, sep } from 'path'
 import { pathToFileURL } from 'url'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
@@ -15,6 +17,7 @@ import icon from '../../resources/icon.png?asset'
 
 const VIDEO_FILE_EXTENSIONS = new Set(['webm', 'mp4', 'ogv'])
 const RECORDING_FILE_PREFIX = 'screen-recording-'
+const POSTER_FILE_EXTENSION = 'jpg'
 let preferredDisplaySourceId = ''
 
 function getRecordingsDirectoryPath() {
@@ -62,27 +65,100 @@ function isRecordingFilePath(filePath) {
 }
 
 function getPosterPathByVideoPath(filePath) {
-  const normalized = typeof filePath === 'string' ? filePath : ''
-  const marker = normalized.lastIndexOf('.')
+  const marker = filePath.lastIndexOf('.')
   if (marker <= 0) {
-    return `${normalized}.jpg`
+    return `${filePath}.${POSTER_FILE_EXTENSION}`
   }
-  return `${normalized.slice(0, marker)}.jpg`
+  return `${filePath.slice(0, marker)}.${POSTER_FILE_EXTENSION}`
 }
 
-async function buildRecordingItem(filePath, fileStat) {
-  const createdAt = Number(fileStat.birthtimeMs || fileStat.mtimeMs || Date.now())
-  const posterPath = getPosterPathByVideoPath(filePath)
-  let posterUrl = ''
+function resolveFfmpegExecutable() {
+  const explicit = process.env.FFMPEG_PATH
+  if (explicit) {
+    return explicit
+  }
+
+  const absoluteCandidates = ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg']
+  for (const candidate of absoluteCandidates) {
+    if (existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  return 'ffmpeg'
+}
+
+async function runFfmpeg(args) {
+  const ffmpegExecutable = resolveFfmpegExecutable()
+  await new Promise((resolvePromise, rejectPromise) => {
+    const processHandle = spawn(ffmpegExecutable, args, {
+      windowsHide: true
+    })
+
+    let stderr = ''
+    processHandle.stderr.on('data', (chunk) => {
+      stderr += String(chunk || '')
+    })
+
+    processHandle.on('error', (error) => {
+      rejectPromise(error)
+    })
+
+    processHandle.on('close', (code) => {
+      if (code === 0) {
+        resolvePromise()
+        return
+      }
+
+      const message = stderr.trim() || `ffmpeg exited with code ${code}`
+      rejectPromise(new Error(message))
+    })
+  })
+}
+
+async function generateRecordingPoster(videoPath) {
+  const posterPath = getPosterPathByVideoPath(videoPath)
+
+  // Try "first second, 12th frame", fallback to first frame if short video.
+  const primaryArgs = [
+    '-y',
+    '-ss',
+    '1',
+    '-i',
+    videoPath,
+    '-vf',
+    'select=eq(n\\,11)',
+    '-frames:v',
+    '1',
+    '-q:v',
+    '2',
+    posterPath
+  ]
 
   try {
-    const posterStat = await stat(posterPath)
-    if (posterStat.isFile()) {
-      posterUrl = pathToFileURL(posterPath).toString()
-    }
+    await runFfmpeg(primaryArgs)
+    return
   } catch {
-    posterUrl = ''
+    const fallbackArgs = [
+      '-y',
+      '-i',
+      videoPath,
+      '-vf',
+      'select=eq(n\\,0)',
+      '-frames:v',
+      '1',
+      '-q:v',
+      '2',
+      posterPath
+    ]
+    await runFfmpeg(fallbackArgs)
   }
+}
+
+function buildRecordingItem(filePath, fileStat) {
+  const createdAt = Number(fileStat.birthtimeMs || fileStat.mtimeMs || Date.now())
+  const posterPath = getPosterPathByVideoPath(filePath)
+  const posterUrl = existsSync(posterPath) ? pathToFileURL(posterPath).toString() : ''
 
   return {
     name: filePath.split(sep).pop() || '',
@@ -118,7 +194,7 @@ async function listRecordingItems() {
       if (!fileStat.isFile()) {
         continue
       }
-      items.push(await buildRecordingItem(filePath, fileStat))
+      items.push(buildRecordingItem(filePath, fileStat))
     } catch {
       continue
     }
@@ -236,7 +312,6 @@ function createWindow() {
 function registerRecordingHandlers() {
   ipcMain.handle('screen-recording:save', async (_, payload = {}) => {
     const parsed = parseDataUrl(payload?.dataUrl || '')
-    const parsedPoster = parseDataUrl(payload?.posterDataUrl || '')
 
     if (!parsed || !parsed.buffer?.length) {
       return { ok: false, message: 'Invalid recording payload.' }
@@ -248,15 +323,16 @@ function registerRecordingHandlers() {
 
     await mkdir(dirname(filePath), { recursive: true })
     await writeFile(filePath, parsed.buffer)
-    if (parsedPoster?.buffer?.length) {
-      const posterPath = getPosterPathByVideoPath(filePath)
-      await writeFile(posterPath, parsedPoster.buffer)
+    try {
+      await generateRecordingPoster(filePath)
+    } catch {
+      // Poster generation is best-effort and should not block save.
     }
     const fileStat = await stat(filePath)
 
     return {
       ok: true,
-      item: await buildRecordingItem(filePath, fileStat)
+      item: buildRecordingItem(filePath, fileStat)
     }
   })
 
@@ -337,11 +413,13 @@ function registerRecordingHandlers() {
         return { ok: false, message: 'Recording file not found.' }
       }
       await unlink(filePath)
-      try {
-        const posterPath = getPosterPathByVideoPath(filePath)
-        await unlink(posterPath)
-      } catch {
-        // Ignore missing poster files.
+      const posterPath = getPosterPathByVideoPath(filePath)
+      if (existsSync(posterPath)) {
+        try {
+          await unlink(posterPath)
+        } catch {
+          // Ignore poster deletion failures.
+        }
       }
       return { ok: true }
     } catch (error) {

@@ -4,8 +4,6 @@ import RecordingVideoCard from './components/RecordingVideoCard'
 import SourcePickerModal from './components/SourcePickerModal'
 import {
   blobToDataUrl,
-  capturePosterFromBlob,
-  capturePosterFromVideo,
   formatDuration,
   getPreferredRecorderMimeType,
   isLikelyPermissionError,
@@ -152,7 +150,6 @@ const RecordingGrid = styled.div`
 function App() {
   const [recordings, setRecordings] = useState([])
   const [isLoadingList, setIsLoadingList] = useState(true)
-  const [recordingPosters, setRecordingPosters] = useState({})
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerLoading, setPickerLoading] = useState(false)
@@ -161,8 +158,8 @@ function App() {
 
   const [recordState, setRecordState] = useState('idle')
   const [elapsedSec, setElapsedSec] = useState(0)
-  const [statusMessage, setStatusMessage] = useState('准备就绪。')
-  const [showPermissionSettingsAction, setShowPermissionSettingsAction] = useState(false)
+  const [, setStatusMessage] = useState('准备就绪。')
+  const [, setShowPermissionSettingsAction] = useState(false)
 
   const mediaRecorderRef = useRef(null)
   const mediaStreamRef = useRef(null)
@@ -363,11 +360,9 @@ function App() {
               type: recorder.mimeType || fallbackMimeType
             })
             const dataUrl = await blobToDataUrl(blob)
-            const posterDataUrl = await capturePosterFromBlob(blob)
             const saveResult = await window.api.saveScreenRecording({
               dataUrl,
-              mimeType: blob.type || fallbackMimeType,
-              posterDataUrl
+              mimeType: blob.type || fallbackMimeType
             })
 
             if (!saveResult?.ok || !saveResult.item) {
@@ -377,12 +372,6 @@ function App() {
             }
 
             setRecordings((previous) => [saveResult.item, ...previous])
-            if (saveResult.item.posterUrl) {
-              setRecordingPosters((previous) => ({
-                ...previous,
-                [saveResult.item.path]: saveResult.item.posterUrl
-              }))
-            }
             setStatusMessage(`录屏已保存：${saveResult.item.name}`)
           } catch (error) {
             setStatusMessage(`保存录屏失败：${error?.message || '未知错误。'}`)
@@ -470,54 +459,6 @@ function App() {
     }
   }, [loadRecordings, resetRecorderState])
 
-  useEffect(() => {
-    setRecordingPosters((previous) => {
-      const next = {}
-      for (const item of recordings) {
-        if (item.posterUrl) {
-          next[item.path] = item.posterUrl
-          continue
-        }
-
-        if (previous[item.path]) {
-          next[item.path] = previous[item.path]
-        }
-      }
-
-      const previousEntries = Object.entries(previous)
-      const nextEntries = Object.entries(next)
-      if (previousEntries.length !== nextEntries.length) {
-        return next
-      }
-
-      for (const [path, poster] of nextEntries) {
-        if (previous[path] !== poster) {
-          return next
-        }
-      }
-
-      return previous
-    })
-  }, [recordings])
-
-  const handleVideoLoadedData = useCallback((path, videoElement) => {
-    setRecordingPosters((previous) => {
-      if (previous[path]) {
-        return previous
-      }
-
-      const poster = capturePosterFromVideo(videoElement)
-      if (!poster) {
-        return previous
-      }
-
-      return {
-        ...previous,
-        [path]: poster
-      }
-    })
-  }, [])
-
   const stopRecording = () => {
     const recorder = mediaRecorderRef.current
 
@@ -590,21 +531,6 @@ function App() {
     setStatusMessage('录屏已删除。')
   }
 
-  const handleOpenPermissionSettings = async () => {
-    if (typeof window.api?.openScreenRecordingPermissionSettings !== 'function') {
-      setStatusMessage('权限设置 API 不可用，请重启 Electron 应用进程后重试。')
-      return
-    }
-
-    const result = await window.api.openScreenRecordingPermissionSettings()
-    if (result?.ok) {
-      setStatusMessage('已打开系统权限设置，请授予屏幕录制权限后重启应用。')
-      return
-    }
-
-    setStatusMessage(result?.message || '无法打开系统权限设置，请手动前往系统设置授权。')
-  }
-
   return (
     <>
       <Page>
@@ -658,8 +584,6 @@ function App() {
                   <RecordingVideoCard
                     key={item.path}
                     item={item}
-                    poster={recordingPosters[item.path]}
-                    onVideoLoadedData={handleVideoLoadedData}
                     onOpen={handleOpenRecording}
                     onReveal={handleRevealRecording}
                     onDelete={handleDeleteRecording}

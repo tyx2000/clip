@@ -25,11 +25,25 @@ const PreviewWrap = styled.div`
   position: relative;
 `
 
-const VideoPreview = styled.video`
+const CoverImage = styled.img`
   width: 100%;
   aspect-ratio: 16 / 9;
   border-radius: 8px;
-  background: #000;
+  display: block;
+  object-fit: cover;
+  border: 1px solid var(--line-soft);
+`
+
+const CoverFallback = styled.div`
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+  background: #0f172a;
+  color: #cbd5e1;
+  font-size: 12px;
+  display: grid;
+  place-items: center;
 `
 
 const FloatingActions = styled.div`
@@ -138,23 +152,16 @@ function DeleteIcon() {
   )
 }
 
-function RecordingVideoCard({ item, poster, onVideoLoadedData, onOpen, onReveal, onDelete }) {
-  const hasPoster = Boolean(poster)
-
+function RecordingVideoCard({ item, onOpen, onReveal, onDelete }) {
   return (
     <Card>
       <FileName title={item.name}>{middleEllipsis(item.name, 40)}</FileName>
       <PreviewWrap>
-        <VideoPreview
-          key={`${item.path}-${hasPoster ? 'poster' : 'noposter'}`}
-          controls
-          preload={hasPoster ? 'none' : 'metadata'}
-          poster={poster || undefined}
-          src={item.fileUrl}
-          onLoadedData={
-            hasPoster ? undefined : (event) => onVideoLoadedData(item.path, event.currentTarget)
-          }
-        />
+        {item.posterUrl ? (
+          <CoverImage src={item.posterUrl} alt={`${item.name} 封面`} loading="lazy" />
+        ) : (
+          <CoverFallback>暂无封面</CoverFallback>
+        )}
         <FloatingActions>
           <IconButton
             type="button"
@@ -195,17 +202,12 @@ RecordingVideoCard.propTypes = {
     name: PropTypes.string.isRequired,
     bytes: PropTypes.number.isRequired,
     createdAt: PropTypes.number.isRequired,
-    fileUrl: PropTypes.string.isRequired
+    fileUrl: PropTypes.string.isRequired,
+    posterUrl: PropTypes.string
   }).isRequired,
-  poster: PropTypes.string,
-  onVideoLoadedData: PropTypes.func.isRequired,
   onOpen: PropTypes.func.isRequired,
   onReveal: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired
-}
-
-RecordingVideoCard.defaultProps = {
-  poster: ''
 }
 
 export default RecordingVideoCard
