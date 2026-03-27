@@ -3,12 +3,14 @@ import styled from 'styled-components'
 import RecordingVideoCard from './components/RecordingVideoCard'
 import SourcePickerModal from './components/SourcePickerModal'
 import {
-  blobToDataUrl,
+  formatBytes,
   formatDuration,
   getPreferredRecorderMimeType,
   isLikelyPermissionError,
   sleep
 } from './utils/recordingUtils'
+
+const TESTING_SEGMENT_DURATION_MS = 5_000
 
 const Page = styled.main`
   height: 100%;
@@ -44,6 +46,29 @@ const Subtitle = styled.p`
   margin: 0;
   color: var(--color-text-soft);
   font-size: 13px;
+`
+
+const StatusText = styled.p`
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+`
+
+const MetricsRow = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+`
+
+const MetricPill = styled.span`
+  border-radius: 999px;
+  padding: 5px 9px;
+  border: 1px solid ${({ $warning }) => ($warning ? '#fecaca' : 'var(--line-soft)')};
+  background: ${({ $warning }) => ($warning ? '#fef2f2' : 'var(--color-block-input)')};
+  color: ${({ $warning }) => ($warning ? '#b91c1c' : 'var(--color-text-soft)')};
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
 `
 
 const TopActions = styled.div`
@@ -147,7 +172,44 @@ const RecordingGrid = styled.div`
   gap: 12px;
 `
 
+const PlayerPage = styled.main`
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: #0b1020;
+  color: #e5e7eb;
+`
+
+const PlayerHeader = styled.header`
+  padding: 10px 14px;
+  border-bottom: 1px solid #1f2937;
+  color: #93c5fd;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+`
+
+const PlayerBody = styled.section`
+  padding: 12px;
+  display: grid;
+  place-items: center;
+`
+
+const PlayerVideo = styled.video`
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  border-radius: 8px;
+`
+
 function App() {
+  const playerParams = useMemo(() => new URLSearchParams(window.location.search), [])
+  const playerUrl = playerParams.get('player') || ''
+  const playerName = playerParams.get('name') || '录制回放'
+  const isPlayerWindow = Boolean(playerUrl)
+
   const [recordings, setRecordings] = useState([])
   const [isLoadingList, setIsLoadingList] = useState(true)
 
@@ -158,18 +220,30 @@ function App() {
 
   const [recordState, setRecordState] = useState('idle')
   const [elapsedSec, setElapsedSec] = useState(0)
-  const [, setStatusMessage] = useState('准备就绪。')
+  const [statusMessage, setStatusMessage] = useState('准备就绪。')
+  const [recordingStats, setRecordingStats] = useState(null)
   const [, setShowPermissionSettingsAction] = useState(false)
 
   const mediaRecorderRef = useRef(null)
   const mediaStreamRef = useRef(null)
-  const chunksRef = useRef([])
+  const recordingSessionIdRef = useRef('')
+  const currentSegmentStartedAtRef = useRef(0)
+  const segmentDurationMsRef = useRef(TESTING_SEGMENT_DURATION_MS)
+  const chunkQueueRef = useRef(Promise.resolve())
   const timerRef = useRef(null)
   const startedAtRef = useRef(0)
 
   const preferredMimeType = useMemo(() => getPreferredRecorderMimeType(), [])
   const isRecording = recordState === 'recording'
   const isBusy = recordState === 'starting' || recordState === 'saving'
+
+  const resetSessionRuntimeState = useCallback(() => {
+    recordingSessionIdRef.current = ''
+    currentSegmentStartedAtRef.current = 0
+    segmentDurationMsRef.current = TESTING_SEGMENT_DURATION_MS
+    chunkQueueRef.current = Promise.resolve()
+    setRecordingStats(null)
+  }, [])
 
   const stopTimer = useCallback(() => {
     if (timerRef.current) {
@@ -186,13 +260,48 @@ function App() {
   }, [])
 
   const resetRecorderState = useCallback(() => {
-    chunksRef.current = []
     mediaRecorderRef.current = null
     stopTimer()
     releaseStream()
     setElapsedSec(0)
     setRecordState('idle')
   }, [releaseStream, stopTimer])
+
+  const enqueueChunkTask = useCallback((task) => {
+    chunkQueueRef.current = chunkQueueRef.current.then(task, task)
+    return chunkQueueRef.current
+  }, [])
+
+  const applySessionStats = useCallback((result) => {
+    if (!result) {
+      return
+    }
+
+    setRecordingStats({
+      segmentCount: Number(result.segmentCount || 0),
+      currentSegmentIndex: Number(result.currentSegmentIndex || 0),
+      currentSegmentBytes: Number(result.currentSegmentBytes || 0),
+      totalBytes: Number(result.totalBytes || 0),
+      freeBytes: Number(result.storage?.freeBytes || 0),
+      lowDiskSpace: Boolean(result.storage?.lowDiskSpace)
+    })
+  }, [])
+
+  const stopSessionIfNeeded = useCallback(async () => {
+    const sessionId = recordingSessionIdRef.current
+    if (!sessionId || typeof window.api?.stopScreenRecordingSession !== 'function') {
+      resetSessionRuntimeState()
+      return null
+    }
+
+    try {
+      const result = await window.api.stopScreenRecordingSession({ sessionId })
+      applySessionStats(result)
+      return result
+    } finally {
+      resetSessionRuntimeState()
+    }
+  }, [applySessionStats, resetSessionRuntimeState])
 
   const loadRecordings = useCallback(async () => {
     setIsLoadingList(true)
@@ -275,6 +384,16 @@ function App() {
         return
       }
 
+      if (
+        typeof window.api?.startScreenRecordingSession !== 'function' ||
+        typeof window.api?.appendScreenRecordingChunk !== 'function' ||
+        typeof window.api?.rotateScreenRecordingSegment !== 'function' ||
+        typeof window.api?.stopScreenRecordingSession !== 'function'
+      ) {
+        setStatusMessage('录屏分段 API 不可用，请重启 Electron 应用进程。')
+        return
+      }
+
       if (typeof window.api?.setScreenRecordingSource === 'function') {
         const setResult = await window.api.setScreenRecordingSource({ sourceId })
         if (!setResult?.ok) {
@@ -311,9 +430,24 @@ function App() {
           ? new window.MediaRecorder(stream, { mimeType: preferredMimeType })
           : new window.MediaRecorder(stream)
 
+        const sessionResult = await window.api.startScreenRecordingSession({
+          mimeType: recorder.mimeType || preferredMimeType || 'video/webm',
+          segmentDurationMs: TESTING_SEGMENT_DURATION_MS
+        })
+        if (!sessionResult?.ok || !sessionResult.sessionId) {
+          throw new Error(sessionResult?.message || '创建录制会话失败。')
+        }
+
         mediaStreamRef.current = stream
         mediaRecorderRef.current = recorder
-        chunksRef.current = []
+        recordingSessionIdRef.current = sessionResult.sessionId
+        currentSegmentStartedAtRef.current = Date.now()
+        segmentDurationMsRef.current =
+          Number(sessionResult.segmentDurationMs) > 0
+            ? Number(sessionResult.segmentDurationMs)
+            : TESTING_SEGMENT_DURATION_MS
+        chunkQueueRef.current = Promise.resolve()
+        applySessionStats(sessionResult)
         startedAtRef.current = Date.now()
         setElapsedSec(0)
         setRecordState('recording')
@@ -335,7 +469,41 @@ function App() {
 
         recorder.ondataavailable = (event) => {
           if (event.data && event.data.size > 0) {
-            chunksRef.current.push(event.data)
+            enqueueChunkTask(async () => {
+              const sessionId = recordingSessionIdRef.current
+              if (!sessionId) {
+                return
+              }
+
+              const chunkBuffer = await event.data.arrayBuffer()
+              const appendResult = await window.api.appendScreenRecordingChunk({
+                sessionId,
+                chunk: chunkBuffer
+              })
+              if (!appendResult?.ok) {
+                throw new Error(appendResult?.message || '写入录屏分片失败。')
+              }
+              applySessionStats(appendResult)
+
+              const now = Date.now()
+              const shouldRotate =
+                now - currentSegmentStartedAtRef.current >= segmentDurationMsRef.current
+              if (!shouldRotate) {
+                return
+              }
+
+              const rotateResult = await window.api.rotateScreenRecordingSegment({ sessionId })
+              if (!rotateResult?.ok) {
+                throw new Error(rotateResult?.message || '切换录屏分段失败。')
+              }
+              applySessionStats(rotateResult)
+              currentSegmentStartedAtRef.current = Date.now()
+            }).catch((error) => {
+              setStatusMessage(`录屏写入失败：${error?.message || '未知错误。'}`)
+              if (mediaRecorderRef.current?.state === 'recording') {
+                mediaRecorderRef.current.stop()
+              }
+            })
           }
         }
 
@@ -346,42 +514,35 @@ function App() {
 
         recorder.onstop = async () => {
           setRecordState('saving')
-          setStatusMessage('正在保存录屏...')
+          setStatusMessage('正在落盘录屏分段...')
           stopTimer()
 
           try {
-            if (!chunksRef.current.length) {
-              setStatusMessage('未采集到有效视频数据。')
-              return
-            }
-
-            const fallbackMimeType = preferredMimeType || 'video/webm'
-            const blob = new Blob(chunksRef.current, {
-              type: recorder.mimeType || fallbackMimeType
-            })
-            const dataUrl = await blobToDataUrl(blob)
-            const saveResult = await window.api.saveScreenRecording({
-              dataUrl,
-              mimeType: blob.type || fallbackMimeType
-            })
-
-            if (!saveResult?.ok || !saveResult.item) {
-              setStatusMessage(saveResult?.message || '保存录屏失败。')
+            await chunkQueueRef.current
+            const stopResult = await stopSessionIfNeeded()
+            if (!stopResult?.ok) {
+              setStatusMessage(stopResult?.message || '结束录屏会话失败。')
               await loadRecordings()
               return
             }
-
-            setRecordings((previous) => [saveResult.item, ...previous])
-            setStatusMessage(`录屏已保存：${saveResult.item.name}`)
+            if (stopResult.item) {
+              setRecordings((previous) => [stopResult.item, ...previous])
+              setStatusMessage(`录屏已保存：${stopResult.item.name}`)
+            } else {
+              await loadRecordings()
+              setStatusMessage(`录屏已结束：${stopResult.sessionId}`)
+            }
           } catch (error) {
             setStatusMessage(`保存录屏失败：${error?.message || '未知错误。'}`)
           } finally {
+            resetSessionRuntimeState()
             resetRecorderState()
           }
         }
 
         recorder.start(1000)
       } catch (error) {
+        await stopSessionIfNeeded()
         resetRecorderState()
         if (isLikelyPermissionError(error)) {
           await applyPermissionGuidance(error)
@@ -393,14 +554,44 @@ function App() {
       }
     },
     [
+      applySessionStats,
       applyPermissionGuidance,
+      enqueueChunkTask,
       getScreenRecordingPermissionStatusSafe,
       loadRecordings,
       preferredMimeType,
+      resetSessionRuntimeState,
       resetRecorderState,
+      stopSessionIfNeeded,
       stopTimer
     ]
   )
+
+  useEffect(() => {
+    const sessionId = recordingSessionIdRef.current
+    if (!sessionId || typeof window.api?.getScreenRecordingSessionStatus !== 'function') {
+      return undefined
+    }
+
+    let cancelled = false
+
+    const pollSessionStatus = async () => {
+      const result = await window.api.getScreenRecordingSessionStatus({ sessionId })
+      if (!cancelled && result?.ok) {
+        applySessionStats(result)
+      }
+    }
+
+    pollSessionStatus().catch(() => {})
+    const timer = window.setInterval(() => {
+      pollSessionStatus().catch(() => {})
+    }, 2000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [applySessionStats, isBusy, isRecording, recordState])
 
   const openSourcePicker = useCallback(async () => {
     if (isBusy || isRecording) {
@@ -448,6 +639,11 @@ function App() {
   }, [isBusy, isRecording])
 
   useEffect(() => {
+    if (isPlayerWindow) {
+      document.title = `录制回放 - ${playerName}`
+      return undefined
+    }
+
     document.title = 'Clip Recorder'
     loadRecordings()
 
@@ -457,7 +653,18 @@ function App() {
       }
       resetRecorderState()
     }
-  }, [loadRecordings, resetRecorderState])
+  }, [isPlayerWindow, loadRecordings, playerName, resetRecorderState])
+
+  if (isPlayerWindow) {
+    return (
+      <PlayerPage>
+        <PlayerHeader title={playerName}>{playerName}</PlayerHeader>
+        <PlayerBody>
+          <PlayerVideo controls preload="metadata" src={playerUrl} />
+        </PlayerBody>
+      </PlayerPage>
+    )
+  }
 
   const stopRecording = () => {
     const recorder = mediaRecorderRef.current
@@ -538,6 +745,20 @@ function App() {
           <TitleGroup>
             <Title>屏幕录制</Title>
             <Subtitle>点击开始录制后选择屏幕或窗口，确认后开始录制。</Subtitle>
+            <StatusText>{statusMessage}</StatusText>
+            {recordingStats ? (
+              <MetricsRow>
+                <MetricPill>已写入 {formatBytes(recordingStats.totalBytes)}</MetricPill>
+                <MetricPill>
+                  当前分段 #{recordingStats.currentSegmentIndex || 1} ·{' '}
+                  {formatBytes(recordingStats.currentSegmentBytes)}
+                </MetricPill>
+                <MetricPill>分段数 {recordingStats.segmentCount}</MetricPill>
+                <MetricPill $warning={recordingStats.lowDiskSpace}>
+                  可用空间 {formatBytes(recordingStats.freeBytes)}
+                </MetricPill>
+              </MetricsRow>
+            ) : null}
           </TitleGroup>
           <TopActions>
             <RecordTimeBadge $active={isRecording}>{formatDuration(elapsedSec)}</RecordTimeBadge>

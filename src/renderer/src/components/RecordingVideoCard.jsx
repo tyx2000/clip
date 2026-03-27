@@ -25,25 +25,13 @@ const PreviewWrap = styled.div`
   position: relative;
 `
 
-const CoverImage = styled.img`
+const VideoPreview = styled.video`
   width: 100%;
   aspect-ratio: 16 / 9;
   border-radius: 8px;
-  display: block;
   object-fit: cover;
+  background: #000;
   border: 1px solid var(--line-soft);
-`
-
-const CoverFallback = styled.div`
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  border-radius: 8px;
-  border: 1px solid var(--line-soft);
-  background: #0f172a;
-  color: #cbd5e1;
-  font-size: 12px;
-  display: grid;
-  place-items: center;
 `
 
 const FloatingActions = styled.div`
@@ -157,11 +145,7 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete }) {
     <Card>
       <FileName title={item.name}>{middleEllipsis(item.name, 40)}</FileName>
       <PreviewWrap>
-        {item.posterUrl ? (
-          <CoverImage src={item.posterUrl} alt={`${item.name} 封面`} loading="lazy" />
-        ) : (
-          <CoverFallback>暂无封面</CoverFallback>
-        )}
+        <VideoPreview controls={false} preload="auto" playsInline src={item.fileUrl} />
         <FloatingActions>
           <IconButton
             type="button"
@@ -202,8 +186,7 @@ RecordingVideoCard.propTypes = {
     name: PropTypes.string.isRequired,
     bytes: PropTypes.number.isRequired,
     createdAt: PropTypes.number.isRequired,
-    fileUrl: PropTypes.string.isRequired,
-    posterUrl: PropTypes.string
+    fileUrl: PropTypes.string.isRequired
   }).isRequired,
   onOpen: PropTypes.func.isRequired,
   onReveal: PropTypes.func.isRequired,

@@ -1,6 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const api = {
+  startScreenRecordingSession: (payload) =>
+    ipcRenderer.invoke('screen-recording:session-start', payload),
+  appendScreenRecordingChunk: (payload) =>
+    ipcRenderer.invoke('screen-recording:session-append-chunk', payload),
+  rotateScreenRecordingSegment: (payload) =>
+    ipcRenderer.invoke('screen-recording:session-rotate', payload),
+  stopScreenRecordingSession: (payload) =>
+    ipcRenderer.invoke('screen-recording:session-stop', payload),
+  getScreenRecordingSessionStatus: (payload) =>
+    ipcRenderer.invoke('screen-recording:session-status', payload),
   saveScreenRecording: (payload) => ipcRenderer.invoke('screen-recording:save', payload),
   listScreenRecordings: () => ipcRenderer.invoke('screen-recording:list'),
   getScreenRecordingPermissionStatus: () =>
@@ -11,7 +21,8 @@ const api = {
   setScreenRecordingSource: (payload) => ipcRenderer.invoke('screen-recording:set-source', payload),
   openScreenRecording: (payload) => ipcRenderer.invoke('screen-recording:open', payload),
   revealScreenRecording: (payload) => ipcRenderer.invoke('screen-recording:reveal', payload),
-  deleteScreenRecording: (payload) => ipcRenderer.invoke('screen-recording:delete', payload)
+  deleteScreenRecording: (payload) => ipcRenderer.invoke('screen-recording:delete', payload),
+  debugScreenRecordingAccess: () => ipcRenderer.invoke('screen-recording:debug-access')
 }
 
 if (process.contextIsolated) {
