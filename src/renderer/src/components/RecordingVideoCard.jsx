@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import PropTypes from 'prop-types'
 import styled from 'styled-components'
 import {
@@ -218,17 +217,9 @@ function getCloudSyncLabel(cloudSync) {
 }
 
 function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync }) {
-  const [metadataDurationSec, setMetadataDurationSec] = useState(() => {
-    const initialDuration = Number(item.durationSec || 0)
-    return Number.isFinite(initialDuration) && initialDuration > 0 ? initialDuration : 0
-  })
   const itemDurationSec = Number(item.durationSec || 0)
-  const resolvedDurationSec =
-    Number.isFinite(itemDurationSec) && itemDurationSec > 0 ? itemDurationSec : metadataDurationSec
   const displayDurationSec =
-    Number.isFinite(resolvedDurationSec) && resolvedDurationSec > 0
-      ? Math.floor(resolvedDurationSec)
-      : 0
+    Number.isFinite(itemDurationSec) && itemDurationSec > 0 ? Math.floor(itemDurationSec) : 0
   const cloudSync = item.cloudSync || null
   const canRetryCloudSync =
     cloudSync?.enabled &&
@@ -237,30 +228,11 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
       cloudSync.mergeStatus === 'merge_failed')
   const cloudSyncLabel = getCloudSyncLabel(cloudSync)
 
-  const handleLoadedMetadata = (event) => {
-    const nextDuration = Number(event.currentTarget.duration || 0)
-    if (Number.isFinite(nextDuration) && nextDuration > 0) {
-      setMetadataDurationSec(nextDuration)
-      return
-    }
-
-    const fallbackDuration = Number(item.durationSec || 0)
-    if (Number.isFinite(fallbackDuration) && fallbackDuration > 0) {
-      setMetadataDurationSec(fallbackDuration)
-    }
-  }
-
   return (
     <Card>
       <FileName title={item.name}>{middleEllipsis(item.name, 40)}</FileName>
       <PreviewWrap>
-        <VideoPreview
-          controls={false}
-          preload="metadata"
-          playsInline
-          src={item.fileUrl}
-          onLoadedMetadata={handleLoadedMetadata}
-        />
+        <VideoPreview controls={false} preload="metadata" playsInline src={item.fileUrl} />
         <FloatingActions>
           {canRetryCloudSync ? (
             <RetryButton

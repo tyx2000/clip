@@ -1,5 +1,4 @@
 import {
-  app,
   BrowserWindow,
   desktopCapturer,
   ipcMain,
@@ -7,12 +6,8 @@ import {
   shell,
   systemPreferences
 } from 'electron'
-import { createHash } from 'node:crypto'
-import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'fs'
-import ffmpegPath from 'ffmpeg-static'
-import { spawn } from 'node:child_process'
+import { createReadStream, createWriteStream, existsSync } from 'fs'
 import { once } from 'node:events'
-import { DatabaseSync } from 'node:sqlite'
 import {
   copyFile,
   mkdir,
@@ -29,25 +24,48 @@ import { dirname, extname, join, resolve, sep } from 'path'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'url'
 import { is } from '@electron-toolkit/utils'
+import {
+  CLOUD_SYNC_RETRY_DELAYS_MS,
+  DEFAULT_CLOUD_SYNC_SERVER_URL,
+  DEFAULT_SEGMENT_DURATION_MS,
+  LOW_DISK_SPACE_THRESHOLD_BYTES,
+  MIN_SEGMENT_DURATION_MS,
+  RECORDING_FILE_PREFIX,
+  RECORDING_MEDIA_SCHEME,
+  VIDEO_FILE_EXTENSIONS,
+  createRecordingFileName,
+  createRecordingSegmentFileName,
+  createRecordingSessionId,
+  getPosterPathByVideoPath,
+  getRecordingSessionsDirectoryPath,
+  getRecordingsDirectoryPath,
+  getVideoExtensionFromMimeType
+} from './recordingPaths'
+import {
+  createRuntimeSessionFromCloudSyncDatabaseRecord as createCloudSyncRuntimeSessionFromDatabase,
+  createRuntimeSessionFromRecordingDatabaseRecord as createLocalRuntimeSessionFromDatabase,
+  deleteCloudSessionFromDatabase,
+  deleteRecordingMetadataFromDatabase,
+  deleteRecordingSessionFromDatabase,
+  listCloudSyncSessionRowsFromDatabase,
+  listLocalRecordingSessionRowsFromDatabase,
+  readCloudSyncSessionRowsFromDatabase,
+  readRecordingMetadataFromDatabase,
+  readRecordingSessionRowsFromDatabase,
+  syncCloudSessionToDatabase,
+  syncRecordingSessionToDatabase,
+  writeRecordingMetadataToDatabase
+} from './recordingDb'
+import {
+  listSessionArtifactPaths,
+  probeVideoDurationSec,
+  runFfmpeg,
+  sha256File
+} from './mediaUtils'
 
-const VIDEO_FILE_EXTENSIONS = new Set(['webm', 'mp4', 'ogv'])
-const RECORDING_FILE_PREFIX = 'sr-'
-const LEGACY_RECORDING_FILE_PREFIXES = ['screen-recording-', RECORDING_FILE_PREFIX]
-const POSTER_FILE_EXTENSION = 'jpg'
-const RECORDING_METADATA_FILE_EXTENSION = 'recording.json'
-const RECORDING_METADATA_DB_FILE_NAME = 'recordings.sqlite3'
-const RECORDING_MEDIA_SCHEME = 'recording'
-const RECORDING_SESSIONS_DIR_NAME = 'sessions'
-const RECORDING_SESSION_MANIFEST_FILE_NAME = 'manifest.json'
-const DEFAULT_SEGMENT_DURATION_MS = 5 * 1000
-const MIN_SEGMENT_DURATION_MS = 1 * 1000
-const LOW_DISK_SPACE_THRESHOLD_BYTES = 2 * 1024 * 1024 * 1024
-const DEFAULT_CLOUD_SYNC_SERVER_URL = 'http://127.0.0.1:8787'
-const CLOUD_SYNC_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 30_000, 60_000]
 let preferredDisplaySourceId = ''
 const activeRecordingSessions = new Map()
 const cloudSyncWorkers = new Map()
-let recordingMetadataDb = null
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -60,48 +78,6 @@ protocol.registerSchemesAsPrivileged([
     }
   }
 ])
-
-function getRecordingsDirectoryPath() {
-  return join(app.getPath('downloads'), 'Recording')
-}
-
-function formatTimestampForFileName(value = Date.now()) {
-  const date = new Date(value)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const seconds = String(date.getSeconds()).padStart(2, '0')
-  return `${year}${month}${day}-${hours}${minutes}${seconds}`
-}
-
-function createRecordingFileName(extension = 'webm') {
-  const stamp = formatTimestampForFileName()
-  return `${RECORDING_FILE_PREFIX}${stamp}.${extension}`
-}
-
-function createRecordingSessionId() {
-  const stamp = formatTimestampForFileName()
-  const randomSuffix = Math.random().toString(36).slice(2, 8)
-  return `session-${stamp}-${randomSuffix}`
-}
-
-function getRecordingSessionsDirectoryPath() {
-  return join(getRecordingsDirectoryPath(), RECORDING_SESSIONS_DIR_NAME)
-}
-
-function createRecordingSegmentFileName(index, extension = 'webm') {
-  const indexLabel = String(index).padStart(4, '0')
-  return `segment-${indexLabel}.${extension}`
-}
-
-function getVideoExtensionFromMimeType(mimeType = '') {
-  const mime = typeof mimeType === 'string' ? mimeType.toLowerCase() : ''
-  if (mime.includes('mp4')) return 'mp4'
-  if (mime.includes('ogg')) return 'ogv'
-  return 'webm'
-}
 
 function parseDataUrl(dataUrl = '') {
   if (typeof dataUrl !== 'string') return null
@@ -258,11 +234,9 @@ function createRecordingSessionManifest({
 
 async function persistRecordingSessionManifest(runtimeSession) {
   runtimeSession.manifest.updatedAt = Date.now()
-  const tempPath = `${runtimeSession.manifestPath}.tmp`
-  const content = JSON.stringify(runtimeSession.manifest, null, 2)
-  await writeFile(tempPath, content, 'utf8')
-  await rename(tempPath, runtimeSession.manifestPath)
+  syncRecordingSessionToDatabase(runtimeSession)
   syncCloudSessionToDatabase(runtimeSession)
+  syncRuntimeSessionOutputMetadata(runtimeSession)
 }
 
 function getRecordingSessionSummary(runtimeSession) {
@@ -284,7 +258,6 @@ function getRecordingSessionSummary(runtimeSession) {
     sessionId: runtimeSession.id,
     status: runtimeSession.manifest.status,
     sessionDir: runtimeSession.dir,
-    manifestPath: runtimeSession.manifestPath,
     segmentDurationMs: runtimeSession.manifest.segmentDurationMs,
     segmentCount: runtimeSession.manifest.segments.length,
     currentSegmentIndex: currentSegment?.index || null,
@@ -301,6 +274,39 @@ function getRecordingSessionSummary(runtimeSession) {
       pendingSegments: cloudPendingSegments
     }
   }
+}
+
+function buildCloudSyncMetadata(runtimeSession) {
+  if (!runtimeSession?.manifest?.cloudSyncEnabled) {
+    return null
+  }
+
+  return {
+    ...runtimeSession.manifest.cloudSync,
+    enabled: true,
+    sessionId: runtimeSession.id,
+    failedSegments: runtimeSession.manifest.segments.filter(
+      (segment) => segment.uploadStatus === 'failed'
+    ).length,
+    pendingSegments: runtimeSession.manifest.segments.filter(
+      (segment) =>
+        segment.status === 'ready' &&
+        segment.uploadStatus !== 'uploaded' &&
+        segment.uploadStatus !== 'disabled'
+    ).length
+  }
+}
+
+function syncRuntimeSessionOutputMetadata(runtimeSession) {
+  const outputPath = runtimeSession?.manifest?.output?.path
+  if (!outputPath) {
+    return
+  }
+
+  writeRecordingMetadataToDatabase(outputPath, {
+    durationSec: Number(runtimeSession.manifest.output?.durationSec || 0) || null,
+    cloudSync: buildCloudSyncMetadata(runtimeSession)
+  })
 }
 
 async function getRecordingStorageSnapshot() {
@@ -334,135 +340,15 @@ async function getRecordingSessionStatus(runtimeSession) {
   }
 }
 
-function createRuntimeSessionFromManifest(manifest, manifestPath) {
+function createRuntimeSession(manifest) {
   return {
     id: manifest.sessionId,
     dir: manifest.sessionDir,
-    manifestPath,
     writeQueue: Promise.resolve(),
     writeStream: null,
     currentSegment: null,
     manifest
   }
-}
-
-async function readRecordingSessionManifest(manifestPath) {
-  const content = await readFile(manifestPath, 'utf8')
-  const parsed = JSON.parse(content)
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Invalid recording session manifest.')
-  }
-
-  return applyRecordingSessionManifestDefaults(parsed)
-}
-
-async function runFfmpeg(args) {
-  if (!ffmpegPath) {
-    throw new Error('ffmpeg binary is not available.')
-  }
-
-  await new Promise((resolveCallback, rejectCallback) => {
-    const child = spawn(ffmpegPath, args, {
-      stdio: ['ignore', 'ignore', 'pipe']
-    })
-
-    let stderr = ''
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString()
-    })
-
-    child.on('error', (error) => {
-      rejectCallback(error)
-    })
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolveCallback()
-        return
-      }
-
-      const tail = stderr.trim().split('\n').slice(-5).join('\n')
-      rejectCallback(new Error(tail || `ffmpeg exited with code ${code}`))
-    })
-  })
-}
-
-async function probeVideoDurationSec(filePath) {
-  if (!ffmpegPath || !filePath || !existsSync(filePath)) {
-    return null
-  }
-
-  return await new Promise((resolveCallback) => {
-    const child = spawn(ffmpegPath, ['-i', filePath], {
-      stdio: ['ignore', 'ignore', 'pipe']
-    })
-
-    let stderr = ''
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString()
-    })
-
-    child.on('error', () => {
-      resolveCallback(null)
-    })
-
-    child.on('close', () => {
-      const matched = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
-      if (!matched) {
-        resolveCallback(null)
-        return
-      }
-
-      const [, hoursRaw, minutesRaw, secondsRaw] = matched
-      const totalSeconds =
-        Number(hoursRaw) * 3600 + Number(minutesRaw) * 60 + Number.parseFloat(secondsRaw)
-
-      if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
-        resolveCallback(null)
-        return
-      }
-
-      resolveCallback(totalSeconds)
-    })
-  })
-}
-
-function estimateRecordingSessionDurationSec(runtimeSession) {
-  const totalMs = runtimeSession.manifest.segments
-    .filter((segment) => segment.status === 'ready')
-    .reduce((sum, segment) => {
-      const startedAt = Number(segment.startedAt || 0)
-      const endedAt = Number(segment.endedAt || 0)
-      const durationMs = endedAt > startedAt ? endedAt - startedAt : 0
-      return sum + durationMs
-    }, 0)
-
-  if (!Number.isFinite(totalMs) || totalMs <= 0) {
-    return null
-  }
-
-  return totalMs / 1000
-}
-
-async function listSessionArtifactPaths(sessionDir) {
-  if (!sessionDir || !existsSync(sessionDir)) {
-    return []
-  }
-
-  const entries = await readdir(sessionDir, { withFileTypes: true }).catch(() => [])
-  const filePaths = []
-
-  for (const entry of entries) {
-    const entryPath = join(sessionDir, entry.name)
-    if (entry.isDirectory()) {
-      filePaths.push(...(await listSessionArtifactPaths(entryPath)))
-      continue
-    }
-
-    filePaths.push(entryPath)
-  }
-
-  return filePaths
 }
 
 async function cleanupRecordingSessionArtifacts(runtimeSession) {
@@ -494,12 +380,8 @@ async function cleanupRecordingSessionArtifacts(runtimeSession) {
     )
   }
 
+  deleteRecordingSessionFromDatabase(runtimeSession.id)
   deleteCloudSessionFromDatabase(runtimeSession.id)
-}
-
-async function sha256File(filePath) {
-  const buffer = await readFile(filePath)
-  return createHash('sha256').update(buffer).digest('hex')
 }
 
 async function parseJsonResponse(response) {
@@ -767,13 +649,7 @@ async function syncCloudRecordingSessionStatus(runtimeSession) {
       if (runtimeSession.manifest.output?.path && existsSync(runtimeSession.manifest.output.path)) {
         await writeRecordingMetadata(runtimeSession.manifest.output.path, {
           durationSec: Number(runtimeSession.manifest.output?.durationSec || 0) || null,
-          cloudSync: {
-            ...runtimeSession.manifest.cloudSync,
-            enabled: true,
-            sessionId: runtimeSession.id,
-            failedSegments: 0,
-            pendingSegments: 0
-          }
+          cloudSync: buildCloudSyncMetadata(runtimeSession)
         })
       }
       await cleanupRecordingSessionArtifacts(runtimeSession)
@@ -944,9 +820,7 @@ async function mergeRecordingSession(runtimeSession) {
   }
 
   const outputStat = await stat(outputFilePath)
-  const durationSec =
-    (await probeVideoDurationSec(outputFilePath)) ??
-    estimateRecordingSessionDurationSec(runtimeSession)
+  const durationSec = await probeVideoDurationSec(outputFilePath)
   runtimeSession.manifest.output = {
     path: outputFilePath,
     status: 'ready',
@@ -957,25 +831,10 @@ async function mergeRecordingSession(runtimeSession) {
   await persistRecordingSessionManifest(runtimeSession)
   await writeRecordingMetadata(outputFilePath, {
     durationSec: runtimeSession.manifest.output.durationSec,
-    cloudSync: runtimeSession.manifest.cloudSyncEnabled
-      ? {
-          ...runtimeSession.manifest.cloudSync,
-          enabled: true,
-          sessionId: runtimeSession.id,
-          failedSegments: runtimeSession.manifest.segments.filter(
-            (segment) => segment.uploadStatus === 'failed'
-          ).length,
-          pendingSegments: runtimeSession.manifest.segments.filter(
-            (segment) =>
-              segment.status === 'ready' &&
-              segment.uploadStatus !== 'uploaded' &&
-              segment.uploadStatus !== 'disabled'
-          ).length
-        }
-      : null
+    cloudSync: buildCloudSyncMetadata(runtimeSession)
   })
 
-  const item = await buildRecordingItem(outputFilePath, outputStat, runtimeSession.manifest.output)
+  const item = await buildRecordingItem(outputFilePath, outputStat)
 
   return {
     item,
@@ -1068,10 +927,6 @@ function shouldRecoverRecordingSession(runtimeSession) {
 }
 
 export async function recoverPendingRecordingSessions() {
-  const sessionsDir = getRecordingSessionsDirectoryPath()
-  await mkdir(sessionsDir, { recursive: true })
-
-  const entries = await readdir(sessionsDir, { withFileTypes: true })
   const summary = {
     scanned: 0,
     recovered: 0,
@@ -1079,34 +934,35 @@ export async function recoverPendingRecordingSessions() {
     failed: 0
   }
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue
-    }
-
+  const sessionRows = listLocalRecordingSessionRowsFromDatabase()
+  for (const sessionRow of sessionRows) {
     summary.scanned += 1
-    const manifestPath = join(sessionsDir, entry.name, RECORDING_SESSION_MANIFEST_FILE_NAME)
-    if (!existsSync(manifestPath)) {
-      summary.skipped += 1
-      continue
-    }
-
     let runtimeSession = null
 
     try {
-      const manifest = await readRecordingSessionManifest(manifestPath)
-      runtimeSession = createRuntimeSessionFromManifest(manifest, manifestPath)
+      const storedSession = readRecordingSessionRowsFromDatabase(sessionRow.sessionId)
+      if (!storedSession) {
+        summary.skipped += 1
+        continue
+      }
+
+      runtimeSession = createLocalRuntimeSessionFromDatabase(
+        storedSession.sessionRow,
+        storedSession.segmentRows,
+        createRuntimeSession
+      )
+      if (!runtimeSession) {
+        summary.skipped += 1
+        continue
+      }
+
       await normalizeRecoveredRecordingSession(runtimeSession)
 
       const outputPath = runtimeSession.manifest.output?.path || ''
       const outputReady =
         runtimeSession.manifest.output?.status === 'ready' && outputPath && existsSync(outputPath)
       if (outputReady) {
-        if (runtimeSession.manifest.cloudSyncEnabled) {
-          scheduleCloudSyncFinalize(runtimeSession)
-        } else {
-          await cleanupRecordingSessionArtifacts(runtimeSession)
-        }
+        await cleanupRecordingSessionArtifacts(runtimeSession)
         summary.skipped += 1
         continue
       }
@@ -1117,18 +973,15 @@ export async function recoverPendingRecordingSessions() {
       }
 
       await mergeRecordingSession(runtimeSession)
-      if (!runtimeSession.manifest.cloudSyncEnabled) {
-        try {
-          await cleanupRecordingSessionArtifacts(runtimeSession)
-        } catch (error) {
-          console.warn(
-            '[recording] failed to clean recovered local session:',
-            runtimeSession.id,
-            error instanceof Error ? error.message : error
-          )
-        }
+      try {
+        await cleanupRecordingSessionArtifacts(runtimeSession)
+      } catch (error) {
+        console.warn(
+          '[recording] failed to clean recovered local session:',
+          runtimeSession.id,
+          error instanceof Error ? error.message : error
+        )
       }
-      scheduleCloudSyncFinalize(runtimeSession)
       summary.recovered += 1
     } catch (error) {
       summary.failed += 1
@@ -1144,10 +997,20 @@ export async function recoverPendingRecordingSessions() {
       }
       console.warn(
         '[recording] failed to recover session:',
-        manifestPath,
+        sessionRow.sessionId,
         error instanceof Error ? error.message : error
       )
     }
+  }
+
+  try {
+    const resumedCloudSync = await resumeAllCloudSyncSessions()
+    summary.recovered += Number(resumedCloudSync?.resumed || 0)
+  } catch (error) {
+    console.warn(
+      '[recording] failed to resume cloud sync sessions:',
+      error instanceof Error ? error.message : error
+    )
   }
 
   return summary
@@ -1259,7 +1122,6 @@ async function createRecordingSession(payload = {}) {
   const cloudSyncEnabled = normalizeCloudSyncEnabled(payload?.cloudSyncEnabled)
   const cloudSyncServerUrl = getCloudSyncServerUrl(payload)
   const sessionDir = join(getRecordingSessionsDirectoryPath(), sessionId)
-  const manifestPath = join(sessionDir, RECORDING_SESSION_MANIFEST_FILE_NAME)
 
   if (existsSync(sessionDir)) {
     throw new Error('Recording session directory already exists.')
@@ -1270,7 +1132,6 @@ async function createRecordingSession(payload = {}) {
   const runtimeSession = {
     id: sessionId,
     dir: sessionDir,
-    manifestPath,
     writeQueue: Promise.resolve(),
     writeStream: null,
     currentSegment: null,
@@ -1390,20 +1251,13 @@ async function stopRecordingSession(payload = {}) {
 
     try {
       const mergeResult = await mergeRecordingSession(runtimeSession)
-      let cleanupErrorMessage = ''
       if (!runtimeSession.manifest.cloudSyncEnabled) {
-        try {
-          await cleanupRecordingSessionArtifacts(runtimeSession)
-        } catch (error) {
-          cleanupErrorMessage =
-            error instanceof Error ? error.message : 'Failed to clean recording session artifacts.'
-        }
+        await cleanupRecordingSessionArtifacts(runtimeSession)
       }
       scheduleCloudSyncFinalize(runtimeSession)
       return {
         ok: true,
         item: mergeResult.item,
-        warningMessage: cleanupErrorMessage || undefined,
         ...(await getRecordingSessionStatus(runtimeSession))
       }
     } catch (error) {
@@ -1466,392 +1320,12 @@ function isRecordingFilePath(filePath) {
   return `${targetPath}${sep}`.startsWith(recordingsRoot)
 }
 
-function getPosterPathByVideoPath(filePath) {
-  const marker = filePath.lastIndexOf('.')
-  if (marker <= 0) {
-    return `${filePath}.${POSTER_FILE_EXTENSION}`
-  }
-  return `${filePath.slice(0, marker)}.${POSTER_FILE_EXTENSION}`
-}
-
-function getMetadataPathByVideoPath(filePath) {
-  return `${filePath}.${RECORDING_METADATA_FILE_EXTENSION}`
-}
-
-function getRecordingMetadataDatabasePath() {
-  return join(getRecordingsDirectoryPath(), RECORDING_METADATA_DB_FILE_NAME)
-}
-
-function getRecordingMetadataDatabase() {
-  if (recordingMetadataDb) {
-    return recordingMetadataDb
-  }
-
-  mkdirSync(getRecordingsDirectoryPath(), { recursive: true })
-  const db = new DatabaseSync(getRecordingMetadataDatabasePath())
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS recordings (
-      file_path TEXT PRIMARY KEY,
-      duration_sec REAL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS recording_cloud_sync_state (
-      file_path TEXT PRIMARY KEY,
-      cloud_sync_json TEXT,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS cloud_sync_sessions (
-      session_id TEXT PRIMARY KEY,
-      output_path TEXT,
-      status TEXT NOT NULL,
-      upload_status TEXT,
-      merge_status TEXT,
-      server_url TEXT,
-      completed_at INTEGER,
-      last_error TEXT,
-      last_attempt_at INTEGER,
-      next_retry_at INTEGER,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS cloud_sync_segments (
-      session_id TEXT NOT NULL,
-      segment_index INTEGER NOT NULL,
-      file_path TEXT,
-      status TEXT,
-      upload_status TEXT,
-      bytes INTEGER,
-      checksum TEXT,
-      etag TEXT,
-      uploaded_at INTEGER,
-      retry_count INTEGER,
-      started_at INTEGER,
-      ended_at INTEGER,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (session_id, segment_index)
-    );
-  `)
-  migrateLegacyRecordingMetadataTable(db)
-  recordingMetadataDb = db
-  return db
-}
-
-function runDatabaseTransaction(db, work) {
-  db.exec('BEGIN')
-  try {
-    const result = work()
-    db.exec('COMMIT')
-    return result
-  } catch (error) {
-    try {
-      db.exec('ROLLBACK')
-    } catch {
-      // Ignore rollback errors so the original failure can surface.
-    }
-    throw error
-  }
-}
-
-function migrateLegacyRecordingMetadataTable(db) {
-  const legacyTable = db
-    .prepare(
-      `
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table' AND name = 'recording_metadata'
-      `
-    )
-    .get()
-
-  if (!legacyTable) {
-    return
-  }
-
-  const rows = db
-    .prepare(
-      `
-        SELECT file_path, duration_sec, cloud_sync_json, updated_at
-        FROM recording_metadata
-      `
-    )
-    .all()
-
-  const insertRecording = db.prepare(
-    `
-      INSERT INTO recordings (file_path, duration_sec, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(file_path) DO UPDATE SET
-        duration_sec = excluded.duration_sec,
-        updated_at = excluded.updated_at
-    `
-  )
-
-  const insertCloudSync = db.prepare(
-    `
-      INSERT INTO recording_cloud_sync_state (file_path, cloud_sync_json, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(file_path) DO UPDATE SET
-        cloud_sync_json = excluded.cloud_sync_json,
-        updated_at = excluded.updated_at
-    `
-  )
-
-  runDatabaseTransaction(db, () => {
-    for (const row of rows) {
-      insertRecording.run(
-        row.file_path,
-        row.duration_sec ?? null,
-        Number(row.updated_at || Date.now())
-      )
-
-      if (typeof row.cloud_sync_json === 'string' && row.cloud_sync_json.trim()) {
-        insertCloudSync.run(
-          row.file_path,
-          row.cloud_sync_json,
-          Number(row.updated_at || Date.now())
-        )
-      }
-    }
-
-    db.exec('DROP TABLE recording_metadata')
-  })
-}
-
-function normalizeRecordingMetadataRecord(row) {
-  if (!row || typeof row !== 'object') {
-    return null
-  }
-
-  let cloudSync = null
-  if (typeof row.cloudSyncJson === 'string' && row.cloudSyncJson.trim()) {
-    try {
-      cloudSync = JSON.parse(row.cloudSyncJson)
-    } catch {
-      cloudSync = null
-    }
-  }
-
-  const durationSec = Number(row.durationSec || 0)
-  return {
-    durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null,
-    cloudSync: cloudSync && typeof cloudSync === 'object' ? cloudSync : null
-  }
-}
-
-function readRecordingMetadataFromDatabase(filePath) {
-  const db = getRecordingMetadataDatabase()
-  const row = db
-    .prepare(
-      `
-        SELECT
-          recordings.duration_sec AS durationSec,
-          recording_cloud_sync_state.cloud_sync_json AS cloudSyncJson
-        FROM recordings
-        LEFT JOIN recording_cloud_sync_state
-          ON recording_cloud_sync_state.file_path = recordings.file_path
-        WHERE recordings.file_path = ?
-      `
-    )
-    .get(resolve(filePath))
-
-  return normalizeRecordingMetadataRecord(row)
-}
-
-function writeRecordingMetadataToDatabase(filePath, metadata) {
-  const db = getRecordingMetadataDatabase()
-  const durationSec = Number(metadata?.durationSec || 0)
-  const cloudSyncJson =
-    metadata?.cloudSync && typeof metadata.cloudSync === 'object'
-      ? JSON.stringify(metadata.cloudSync)
-      : null
-
-  const normalizedPath = resolve(filePath)
-  const updatedAt = Date.now()
-  runDatabaseTransaction(db, () => {
-    db.prepare(
-      `
-        INSERT INTO recordings (file_path, duration_sec, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(file_path) DO UPDATE SET
-          duration_sec = excluded.duration_sec,
-          updated_at = excluded.updated_at
-      `
-    ).run(
-      normalizedPath,
-      Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null,
-      updatedAt
-    )
-
-    if (cloudSyncJson) {
-      db.prepare(
-        `
-          INSERT INTO recording_cloud_sync_state (file_path, cloud_sync_json, updated_at)
-          VALUES (?, ?, ?)
-          ON CONFLICT(file_path) DO UPDATE SET
-            cloud_sync_json = excluded.cloud_sync_json,
-            updated_at = excluded.updated_at
-        `
-      ).run(normalizedPath, cloudSyncJson, updatedAt)
-      return
-    }
-
-    db.prepare('DELETE FROM recording_cloud_sync_state WHERE file_path = ?').run(normalizedPath)
-  })
-}
-
-function deleteRecordingMetadataFromDatabase(filePath) {
-  const db = getRecordingMetadataDatabase()
-  const normalizedPath = resolve(filePath)
-  runDatabaseTransaction(db, () => {
-    db.prepare('DELETE FROM recording_cloud_sync_state WHERE file_path = ?').run(normalizedPath)
-    db.prepare('DELETE FROM recordings WHERE file_path = ?').run(normalizedPath)
-  })
-}
-
-function syncCloudSessionToDatabase(runtimeSession) {
-  if (!runtimeSession?.manifest?.cloudSyncEnabled) {
-    return
-  }
-
-  const db = getRecordingMetadataDatabase()
-  const outputPath = runtimeSession.manifest.output?.path
-    ? resolve(runtimeSession.manifest.output.path)
-    : null
-  const updatedAt = Number(runtimeSession.manifest.updatedAt || Date.now())
-  const cloudSync = runtimeSession.manifest.cloudSync || {}
-
-  runDatabaseTransaction(db, () => {
-    db.prepare(
-      `
-        INSERT INTO cloud_sync_sessions (
-          session_id,
-          output_path,
-          status,
-          upload_status,
-          merge_status,
-          server_url,
-          completed_at,
-          last_error,
-          last_attempt_at,
-          next_retry_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET
-          output_path = excluded.output_path,
-          status = excluded.status,
-          upload_status = excluded.upload_status,
-          merge_status = excluded.merge_status,
-          server_url = excluded.server_url,
-          completed_at = excluded.completed_at,
-          last_error = excluded.last_error,
-          last_attempt_at = excluded.last_attempt_at,
-          next_retry_at = excluded.next_retry_at,
-          updated_at = excluded.updated_at
-      `
-    ).run(
-      runtimeSession.id,
-      outputPath,
-      runtimeSession.manifest.status,
-      cloudSync.uploadStatus || null,
-      cloudSync.mergeStatus || null,
-      cloudSync.serverUrl || null,
-      Number(cloudSync.completedAt || 0) || null,
-      cloudSync.lastError || null,
-      Number(cloudSync.lastAttemptAt || 0) || null,
-      Number(cloudSync.nextRetryAt || 0) || null,
-      updatedAt
-    )
-
-    db.prepare('DELETE FROM cloud_sync_segments WHERE session_id = ?').run(runtimeSession.id)
-    const insertSegment = db.prepare(
-      `
-        INSERT INTO cloud_sync_segments (
-          session_id,
-          segment_index,
-          file_path,
-          status,
-          upload_status,
-          bytes,
-          checksum,
-          etag,
-          uploaded_at,
-          retry_count,
-          started_at,
-          ended_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-    )
-
-    for (const segment of runtimeSession.manifest.segments) {
-      insertSegment.run(
-        runtimeSession.id,
-        Number(segment.index || 0),
-        segment.path ? resolve(segment.path) : null,
-        segment.status || null,
-        segment.uploadStatus || null,
-        Number(segment.bytes || 0),
-        segment.checksum || null,
-        segment.etag || null,
-        Number(segment.uploadedAt || 0) || null,
-        Number(segment.retryCount || 0),
-        Number(segment.startedAt || 0) || null,
-        Number(segment.endedAt || 0) || null,
-        updatedAt
-      )
-    }
-  })
-}
-
-function deleteCloudSessionFromDatabase(sessionId) {
-  if (typeof sessionId !== 'string' || !sessionId.trim()) {
-    return
-  }
-
-  const db = getRecordingMetadataDatabase()
-  runDatabaseTransaction(db, () => {
-    db.prepare('DELETE FROM cloud_sync_segments WHERE session_id = ?').run(sessionId)
-    db.prepare('DELETE FROM cloud_sync_sessions WHERE session_id = ?').run(sessionId)
-  })
-}
-
 async function readRecordingMetadata(filePath) {
-  const storedMetadata = readRecordingMetadataFromDatabase(filePath)
-  if (storedMetadata) {
-    return storedMetadata
-  }
-
-  const metadataPath = getMetadataPathByVideoPath(filePath)
-  if (!existsSync(metadataPath)) {
-    return null
-  }
-
-  try {
-    const content = await readFile(metadataPath, 'utf8')
-    const parsed = JSON.parse(content)
-    const metadata = parsed && typeof parsed === 'object' ? parsed : null
-    if (!metadata) {
-      return null
-    }
-
-    writeRecordingMetadataToDatabase(filePath, metadata)
-    await unlink(metadataPath).catch(() => {})
-    return metadata
-  } catch {
-    return null
-  }
+  return readRecordingMetadataFromDatabase(filePath)
 }
 
 async function writeRecordingMetadata(filePath, metadata) {
   writeRecordingMetadataToDatabase(filePath, metadata)
-  const metadataPath = getMetadataPathByVideoPath(filePath)
-  if (existsSync(metadataPath)) {
-    await unlink(metadataPath).catch(() => {})
-  }
 }
 
 function toRecordingMediaUrl(filePath) {
@@ -1923,20 +1397,15 @@ function parseRangeHeader(rangeValue, fileSize) {
   return { start, end }
 }
 
-async function buildRecordingItem(filePath, fileStat, output = null) {
+async function buildRecordingItem(filePath, fileStat) {
   const metadata = await readRecordingMetadata(filePath)
   const createdAt = Number(fileStat.birthtimeMs || fileStat.mtimeMs || Date.now())
   const posterPath = getPosterPathByVideoPath(filePath)
   const posterUrl = existsSync(posterPath) ? pathToFileURL(posterPath).toString() : ''
   const probedDurationSec = await probeVideoDurationSec(filePath)
-  const knownDurationSec = Number(output?.durationSec || metadata?.durationSec || 0)
   const durationSec =
-    Number.isFinite(probedDurationSec) && probedDurationSec > 0
-      ? probedDurationSec
-      : knownDurationSec > 0
-        ? knownDurationSec
-        : null
-  const cloudSync = output?.cloudSync || metadata?.cloudSync || null
+    Number.isFinite(probedDurationSec) && probedDurationSec > 0 ? probedDurationSec : null
+  const cloudSync = metadata?.cloudSync || null
 
   return {
     name: filePath.split(sep).pop() || '',
@@ -1954,12 +1423,11 @@ async function listRecordingItems() {
   const recordingsDir = getRecordingsDirectoryPath()
   await mkdir(recordingsDir, { recursive: true })
 
-  const cloudSyncOutputs = await listCloudSyncOutputIndex()
   const fileNames = await readdir(recordingsDir)
   const items = []
 
   for (const fileName of fileNames) {
-    if (!LEGACY_RECORDING_FILE_PREFIXES.some((prefix) => fileName.startsWith(prefix))) {
+    if (!fileName.startsWith(RECORDING_FILE_PREFIX)) {
       continue
     }
 
@@ -1975,9 +1443,7 @@ async function listRecordingItems() {
       if (!fileStat.isFile()) {
         continue
       }
-      items.push(
-        await buildRecordingItem(filePath, fileStat, cloudSyncOutputs.get(filePath) || null)
-      )
+      items.push(await buildRecordingItem(filePath, fileStat))
     } catch {
       continue
     }
@@ -1985,57 +1451,6 @@ async function listRecordingItems() {
 
   items.sort((a, b) => b.createdAt - a.createdAt)
   return items
-}
-
-async function listCloudSyncOutputIndex() {
-  const sessionsDir = getRecordingSessionsDirectoryPath()
-  await mkdir(sessionsDir, { recursive: true })
-
-  const entries = await readdir(sessionsDir, { withFileTypes: true }).catch(() => [])
-  const outputIndex = new Map()
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue
-    }
-
-    const manifestPath = join(sessionsDir, entry.name, RECORDING_SESSION_MANIFEST_FILE_NAME)
-    if (!existsSync(manifestPath)) {
-      continue
-    }
-
-    try {
-      const manifest = await readRecordingSessionManifest(manifestPath)
-      if (
-        !manifest.cloudSyncEnabled ||
-        !manifest.output?.path ||
-        !existsSync(manifest.output.path)
-      ) {
-        continue
-      }
-
-      outputIndex.set(manifest.output.path, {
-        durationSec: Number(manifest.output?.durationSec || 0) || null,
-        cloudSync: {
-          ...manifest.cloudSync,
-          sessionId: manifest.sessionId,
-          enabled: true,
-          failedSegments: manifest.segments.filter((segment) => segment.uploadStatus === 'failed')
-            .length,
-          pendingSegments: manifest.segments.filter(
-            (segment) =>
-              segment.status === 'ready' &&
-              segment.uploadStatus !== 'uploaded' &&
-              segment.uploadStatus !== 'disabled'
-          ).length
-        }
-      })
-    } catch {
-      continue
-    }
-  }
-
-  return outputIndex
 }
 
 async function getRuntimeSessionForCloudSync(payload = {}) {
@@ -2046,45 +1461,18 @@ async function getRuntimeSessionForCloudSync(payload = {}) {
       return activeSession
     }
 
-    const manifestPath = join(
-      getRecordingSessionsDirectoryPath(),
-      sessionId,
-      RECORDING_SESSION_MANIFEST_FILE_NAME
-    )
-    if (!existsSync(manifestPath)) {
+    const storedSession = readCloudSyncSessionRowsFromDatabase(sessionId)
+    if (!storedSession) {
       return null
     }
 
-    const manifest = await readRecordingSessionManifest(manifestPath)
-    return createRuntimeSessionFromManifest(manifest, manifestPath)
-  }
-
-  const outputPath = typeof payload?.outputPath === 'string' ? payload.outputPath.trim() : ''
-  if (!outputPath) {
-    return null
-  }
-
-  const sessionsDir = getRecordingSessionsDirectoryPath()
-  const entries = await readdir(sessionsDir, { withFileTypes: true }).catch(() => [])
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue
-    }
-
-    const manifestPath = join(sessionsDir, entry.name, RECORDING_SESSION_MANIFEST_FILE_NAME)
-    if (!existsSync(manifestPath)) {
-      continue
-    }
-
-    try {
-      const manifest = await readRecordingSessionManifest(manifestPath)
-      if (manifest.output?.path === outputPath) {
-        return createRuntimeSessionFromManifest(manifest, manifestPath)
-      }
-    } catch {
-      continue
-    }
+    return await createCloudSyncRuntimeSessionFromDatabase(
+      storedSession.sessionRow,
+      storedSession.segmentRows,
+      applyRecordingSessionManifestDefaults,
+      createCloudSyncState,
+      createRuntimeSession
+    )
   }
 
   return null
@@ -2121,29 +1509,37 @@ async function retryCloudSyncSession(payload = {}) {
 }
 
 async function resumeAllCloudSyncSessions() {
-  const sessionsDir = getRecordingSessionsDirectoryPath()
-  await mkdir(sessionsDir, { recursive: true })
-
-  const entries = await readdir(sessionsDir, { withFileTypes: true }).catch(() => [])
+  const sessionRows = listCloudSyncSessionRowsFromDatabase()
   let resumed = 0
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue
-    }
-
-    const manifestPath = join(sessionsDir, entry.name, RECORDING_SESSION_MANIFEST_FILE_NAME)
-    if (!existsSync(manifestPath)) {
-      continue
-    }
-
+  for (const sessionRow of sessionRows) {
     try {
-      const manifest = await readRecordingSessionManifest(manifestPath)
-      if (!manifest.cloudSyncEnabled) {
+      const storedSession = readCloudSyncSessionRowsFromDatabase(sessionRow.sessionId)
+      if (!storedSession) {
         continue
       }
 
-      const runtimeSession = createRuntimeSessionFromManifest(manifest, manifestPath)
+      const runtimeSession = await createCloudSyncRuntimeSessionFromDatabase(
+        storedSession.sessionRow,
+        storedSession.segmentRows,
+        applyRecordingSessionManifestDefaults,
+        createCloudSyncState,
+        createRuntimeSession
+      )
+      if (!runtimeSession?.manifest?.cloudSyncEnabled) {
+        continue
+      }
+
+      await normalizeRecoveredRecordingSession(runtimeSession)
+
+      const outputPath = runtimeSession.manifest.output?.path || ''
+      const outputReady =
+        runtimeSession.manifest.output?.status === 'ready' && outputPath && existsSync(outputPath)
+
+      if (!outputReady && shouldRecoverRecordingSession(runtimeSession)) {
+        await mergeRecordingSession(runtimeSession)
+      }
+
       scheduleCloudSyncProcessing(runtimeSession)
       resumed += 1
     } catch {
@@ -2497,10 +1893,7 @@ export function registerRecordingHandlers() {
 
     return {
       ok: true,
-      item: await buildRecordingItem(filePath, fileStat, {
-        durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null,
-        cloudSync: null
-      })
+      item: await buildRecordingItem(filePath, fileStat)
     }
   })
 
@@ -2627,6 +2020,7 @@ export function registerRecordingHandlers() {
 
   ipcMain.handle('screen-recording:delete', async (_, payload = {}) => {
     const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
     if (!isRecordingFilePath(filePath)) {
       return { ok: false, message: 'Invalid recording path.' }
     }
@@ -2638,7 +2032,6 @@ export function registerRecordingHandlers() {
       }
       await unlink(filePath)
       const posterPath = getPosterPathByVideoPath(filePath)
-      const metadataPath = getMetadataPathByVideoPath(filePath)
       deleteRecordingMetadataFromDatabase(filePath)
       if (existsSync(posterPath)) {
         try {
@@ -2647,11 +2040,8 @@ export function registerRecordingHandlers() {
           // Ignore poster deletion failures.
         }
       }
-      if (existsSync(metadataPath)) {
-        await unlink(metadataPath).catch(() => {})
-      }
 
-      const runtimeSession = await getRuntimeSessionForCloudSync({ outputPath: filePath })
+      const runtimeSession = sessionId ? await getRuntimeSessionForCloudSync({ sessionId }) : null
       if (runtimeSession) {
         clearCloudSyncWorker(runtimeSession.id)
         await cleanupRecordingSessionArtifacts(runtimeSession)

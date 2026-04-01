@@ -299,17 +299,13 @@ export function useScreenRecordingController({
             }
 
             if (stopResult.item) {
-              setStatusMessage(
-                stopResult.warningMessage
-                  ? `录屏已保存：${stopResult.item.name}（${stopResult.warningMessage}）`
-                  : `录屏已保存：${stopResult.item.name}`
-              )
+              setStatusMessage(`录屏已保存：${stopResult.item.name}`)
             } else {
               setStatusMessage(`录屏已结束：${stopResult.sessionId}`)
             }
             await loadRecordings()
           } catch (error) {
-            setStatusMessage(`保存录屏失败：${error?.message || "未知错误。"}`)
+            setStatusMessage(`保存录屏失败：${error?.message || '未知错误。'}`)
           } finally {
             resetSessionRuntimeState()
             resetRecorderState()
@@ -493,7 +489,7 @@ export function useScreenRecordingController({
       )
     } catch (error) {
       await minimumLoading
-      setStatusMessage(`读取录制源失败：${error?.message || "未知错误。"}`)
+      setStatusMessage(`读取录制源失败：${error?.message || '未知错误。'}`)
       setPickerSources([])
       setPickerSelectedSourceId('')
     } finally {
@@ -616,7 +612,7 @@ export function useScreenRecordingController({
     }
   }, [])
 
-  const handleDeleteRecording = useCallback(async (path) => {
+  const handleDeleteRecording = useCallback(async (item) => {
     if (typeof window.api?.deleteScreenRecording !== 'function') {
       setStatusMessage('删除 API 不可用，请重启 Electron 应用进程。')
       return
@@ -627,7 +623,11 @@ export function useScreenRecordingController({
       return
     }
 
-    const result = await window.api.deleteScreenRecording({ path })
+    const path = item?.path || ''
+    const result = await window.api.deleteScreenRecording({
+      path,
+      sessionId: item?.cloudSync?.sessionId || ''
+    })
     if (!result?.ok) {
       setStatusMessage(result?.message || '删除录屏失败。')
       return
@@ -647,8 +647,7 @@ export function useScreenRecordingController({
       }
 
       const result = await window.api.retryCloudSyncSession({
-        sessionId: item.cloudSync?.sessionId,
-        outputPath: item.path
+        sessionId: item.cloudSync?.sessionId
       })
       if (!result?.ok) {
         setStatusMessage(result?.message || '重试云同步失败。')
@@ -681,7 +680,7 @@ export function useScreenRecordingController({
         }
       }
 
-      await handleDeleteRecording(item?.path || '')
+      await handleDeleteRecording(item)
     },
     [handleDeleteRecording]
   )
