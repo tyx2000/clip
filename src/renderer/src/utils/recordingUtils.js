@@ -1,7 +1,14 @@
 export function formatDuration(totalSeconds) {
-  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0')
-  const seconds = String(totalSeconds % 60).padStart(2, '0')
-  return `${minutes}:${seconds}`
+  const normalized = Math.max(0, Math.round(Number(totalSeconds) || 0))
+  const hours = Math.floor(normalized / 3600)
+  const minutes = Math.floor((normalized % 3600) / 60)
+  const seconds = normalized % 60
+
+  if (hours > 0) {
+    return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':')
+  }
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
 export function sleep(ms) {
@@ -41,7 +48,7 @@ export function middleEllipsis(value, maxLength = 36) {
   const backLength = Math.floor(budget / 2)
   const back = backLength > 0 ? body.slice(-backLength) : ''
 
-  return `${body.slice(0, frontLength)}…${back}${extension}`
+  return `${body.slice(0, frontLength)}...${back}${extension}`
 }
 
 export function formatDateTime24(value) {

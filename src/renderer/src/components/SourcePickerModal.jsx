@@ -50,8 +50,22 @@ const PickerDesc = styled.p`
 
 const PickerHeaderActions = styled.div`
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+`
+
+const SyncToggleLabel = styled.label`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-soft);
+  user-select: none;
+`
+
+const SyncToggle = styled.input`
+  margin: 0;
 `
 
 const Button = styled.button`
@@ -156,8 +170,10 @@ function SourcePickerModal({
   loading,
   sources,
   selectedSourceId,
+  cloudSyncEnabled,
   isBusy,
   onSelect,
+  onToggleCloudSync,
   onCancel,
   onConfirm
 }) {
@@ -177,6 +193,15 @@ function SourcePickerModal({
           </PickerHeaderMeta>
 
           <PickerHeaderActions>
+            <SyncToggleLabel>
+              <SyncToggle
+                type="checkbox"
+                checked={cloudSyncEnabled}
+                onChange={(event) => onToggleCloudSync(event.target.checked)}
+                disabled={isBusy}
+              />
+              云端同步
+            </SyncToggleLabel>
             <Button type="button" onClick={onCancel} disabled={isBusy}>
               取消
             </Button>
@@ -237,8 +262,10 @@ SourcePickerModal.propTypes = {
     })
   ).isRequired,
   selectedSourceId: PropTypes.string.isRequired,
+  cloudSyncEnabled: PropTypes.bool.isRequired,
   isBusy: PropTypes.bool.isRequired,
   onSelect: PropTypes.func.isRequired,
+  onToggleCloudSync: PropTypes.func.isRequired,
   onCancel: PropTypes.func.isRequired,
   onConfirm: PropTypes.func.isRequired
 }

@@ -1,6 +1,12 @@
+import { useState } from 'react'
 import PropTypes from 'prop-types'
 import styled from 'styled-components'
-import { formatBytes, formatDateTime24, middleEllipsis } from '../utils/recordingUtils'
+import {
+  formatBytes,
+  formatDateTime24,
+  formatDuration,
+  middleEllipsis
+} from '../utils/recordingUtils'
 
 const Card = styled.article`
   border: 1px solid var(--line-soft);
@@ -32,6 +38,26 @@ const VideoPreview = styled.video`
   object-fit: cover;
   background: #000;
   border: 1px solid var(--line-soft);
+`
+
+const MetaRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+`
+
+const DurationBadge = styled.div`
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(15, 23, 42, 0.84);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
 `
 
 const FloatingActions = styled.div`
@@ -82,10 +108,21 @@ const DeleteButton = styled(IconButton)`
   color: #b91c1c;
 `
 
+const RetryButton = styled(IconButton)`
+  color: #0f766e;
+`
+
 const MetaLine = styled.p`
   margin: 0;
   font-size: 12px;
   color: var(--color-text-soft);
+  flex: 1;
+  min-width: 0;
+`
+
+const SyncMeta = styled.span`
+  color: ${({ $failed }) => ($failed ? '#b91c1c' : '#0f766e')};
+  font-weight: 600;
 `
 
 function OpenIcon() {
@@ -140,42 +177,138 @@ function DeleteIcon() {
   )
 }
 
-function RecordingVideoCard({ item, onOpen, onReveal, onDelete }) {
+function SyncIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M20 12A8 8 0 1 1 17.66 6.34"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M20 4V10H14"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function getCloudSyncLabel(cloudSync) {
+  if (!cloudSync?.enabled) {
+    return ''
+  }
+
+  if (Number(cloudSync.failedSegments || 0) > 0) {
+    return `???? ${Number(cloudSync.failedSegments || 0)} ?`
+  }
+
+  if (Number(cloudSync.pendingSegments || 0) > 0) {
+    return `??? ${Number(cloudSync.pendingSegments || 0)} ?`
+  }
+
+  if (cloudSync.mergeStatus === 'merged') {
+    return '?????'
+  }
+
+  return '????'
+}
+
+function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync }) {
+  const [metadataDurationSec, setMetadataDurationSec] = useState(() => {
+    const initialDuration = Number(item.durationSec || 0)
+    return Number.isFinite(initialDuration) && initialDuration > 0 ? initialDuration : 0
+  })
+  const itemDurationSec = Number(item.durationSec || 0)
+  const resolvedDurationSec =
+    Number.isFinite(itemDurationSec) && itemDurationSec > 0 ? itemDurationSec : metadataDurationSec
+  const displayDurationSec =
+    Number.isFinite(resolvedDurationSec) && resolvedDurationSec > 0
+      ? Math.floor(resolvedDurationSec)
+      : 0
+  const cloudSync = item.cloudSync || null
+  const canRetryCloudSync =
+    cloudSync?.enabled &&
+    (Number(cloudSync.pendingSegments || 0) > 0 ||
+      Number(cloudSync.failedSegments || 0) > 0 ||
+      cloudSync.mergeStatus === 'merge_failed')
+  const cloudSyncLabel = getCloudSyncLabel(cloudSync)
+
+  const handleLoadedMetadata = (event) => {
+    const nextDuration = Number(event.currentTarget.duration || 0)
+    if (Number.isFinite(nextDuration) && nextDuration > 0) {
+      setMetadataDurationSec(nextDuration)
+      return
+    }
+
+    const fallbackDuration = Number(item.durationSec || 0)
+    if (Number.isFinite(fallbackDuration) && fallbackDuration > 0) {
+      setMetadataDurationSec(fallbackDuration)
+    }
+  }
+
   return (
     <Card>
       <FileName title={item.name}>{middleEllipsis(item.name, 40)}</FileName>
       <PreviewWrap>
-        <VideoPreview controls={false} preload="auto" playsInline src={item.fileUrl} />
+        <VideoPreview
+          controls={false}
+          preload="metadata"
+          playsInline
+          src={item.fileUrl}
+          onLoadedMetadata={handleLoadedMetadata}
+        />
         <FloatingActions>
+          {canRetryCloudSync ? (
+            <RetryButton
+              type="button"
+              aria-label="????"
+              title="????"
+              onClick={() => onRetryCloudSync(item)}
+            >
+              <SyncIcon />
+            </RetryButton>
+          ) : null}
           <IconButton
             type="button"
-            aria-label="打开文件"
-            title="打开文件"
+            aria-label="????"
+            title="????"
             onClick={() => onOpen(item.path)}
           >
             <OpenIcon />
           </IconButton>
           <IconButton
             type="button"
-            aria-label="显示位置"
-            title="显示位置"
+            aria-label="????"
+            title="????"
             onClick={() => onReveal(item.path)}
           >
             <RevealIcon />
           </IconButton>
-          <DeleteButton
-            type="button"
-            aria-label="删除"
-            title="删除"
-            onClick={() => onDelete(item.path)}
-          >
+          <DeleteButton type="button" aria-label="??" title="??" onClick={() => onDelete(item)}>
             <DeleteIcon />
           </DeleteButton>
         </FloatingActions>
       </PreviewWrap>
-      <MetaLine>
-        {formatDateTime24(item.createdAt)} · {formatBytes(item.bytes)}
-      </MetaLine>
+      <MetaRow>
+        <MetaLine>
+          {formatDateTime24(item.createdAt)} ? {formatBytes(item.bytes)}
+          {cloudSync?.enabled ? (
+            <>
+              {' ? '}
+              <SyncMeta $failed={Number(cloudSync.failedSegments || 0) > 0}>
+                {cloudSyncLabel}
+              </SyncMeta>
+            </>
+          ) : null}
+        </MetaLine>
+        {displayDurationSec > 0 ? (
+          <DurationBadge>{formatDuration(displayDurationSec)}</DurationBadge>
+        ) : null}
+      </MetaRow>
     </Card>
   )
 }
@@ -186,11 +319,20 @@ RecordingVideoCard.propTypes = {
     name: PropTypes.string.isRequired,
     bytes: PropTypes.number.isRequired,
     createdAt: PropTypes.number.isRequired,
-    fileUrl: PropTypes.string.isRequired
+    fileUrl: PropTypes.string.isRequired,
+    durationSec: PropTypes.number,
+    cloudSync: PropTypes.shape({
+      enabled: PropTypes.bool,
+      sessionId: PropTypes.string,
+      mergeStatus: PropTypes.string,
+      failedSegments: PropTypes.number,
+      pendingSegments: PropTypes.number
+    })
   }).isRequired,
   onOpen: PropTypes.func.isRequired,
   onReveal: PropTypes.func.isRequired,
-  onDelete: PropTypes.func.isRequired
+  onDelete: PropTypes.func.isRequired,
+  onRetryCloudSync: PropTypes.func.isRequired
 }
 
 export default RecordingVideoCard
