@@ -1,6 +1,7 @@
 import { existsSync } from 'fs'
 import { readFile } from 'fs/promises'
 
+/** Builds the background upload runtime for cloud-sync-enabled sessions. */
 export function createCloudSyncRuntime({
   getCloudSyncRetryDelayMs,
   persistRecordingSessionManifest,
@@ -11,6 +12,7 @@ export function createCloudSyncRuntime({
 }) {
   const cloudSyncWorkers = new Map()
 
+  /** Parses a JSON HTTP response body into a plain object. */
   async function parseJsonResponse(response) {
     const text = await response.text()
     if (!text.trim()) {
@@ -24,6 +26,11 @@ export function createCloudSyncRuntime({
     }
   }
 
+  /** Sends one JSON request to the configured cloud-sync server.
+   * @param {object} runtimeSession Cloud-sync-enabled runtime session.
+   * @param {string} path Server-relative path.
+   * @param {RequestInit} init Fetch init options.
+   */
   async function cloudSyncFetchJson(runtimeSession, path, init = {}) {
     const serverUrl = runtimeSession.manifest.cloudSync?.serverUrl
     if (!serverUrl) {
@@ -39,6 +46,9 @@ export function createCloudSyncRuntime({
     return payload
   }
 
+  /** Creates the remote session lazily before the first part upload.
+   * @param {object} runtimeSession Cloud-sync-enabled runtime session.
+   */
   async function ensureCloudSyncRemoteSession(runtimeSession) {
     if (!runtimeSession.manifest.cloudSyncEnabled) {
       return
@@ -81,6 +91,7 @@ export function createCloudSyncRuntime({
     }
   }
 
+  /** Returns the timer/running state holder for one session worker. */
   function getCloudSyncWorkerState(sessionId) {
     if (!cloudSyncWorkers.has(sessionId)) {
       cloudSyncWorkers.set(sessionId, {
@@ -92,6 +103,7 @@ export function createCloudSyncRuntime({
     return cloudSyncWorkers.get(sessionId)
   }
 
+  /** Stops and removes the worker state for one cloud-sync session. */
   function clearCloudSyncWorker(sessionId) {
     const worker = cloudSyncWorkers.get(sessionId)
     if (!worker) {
@@ -105,21 +117,29 @@ export function createCloudSyncRuntime({
     cloudSyncWorkers.delete(sessionId)
   }
 
-  function getPendingCloudSyncSegments(runtimeSession) {
+  /** Returns parts that are sealed on disk and still need upload.
+   * @param {object} runtimeSession Cloud-sync-enabled runtime session.
+   */
+  function getPendingCloudSyncParts(runtimeSession) {
     return runtimeSession.manifest.segments
       .filter(
-        (segment) =>
-          segment.status === 'ready' &&
-          existsSync(segment.path) &&
-          segment.uploadStatus !== 'uploaded'
+        (part) =>
+          part.status === 'ready' && existsSync(part.path) && part.uploadStatus !== 'uploaded'
       )
       .sort((left, right) => left.index - right.index)
   }
 
+  /** Applies server status back into the local session snapshot.
+   * @param {object} runtimeSession Cloud-sync-enabled runtime session.
+   * @param {object} payload Server status payload.
+   */
   function updateCloudSyncStateFromRemote(runtimeSession, payload = {}) {
     if (!runtimeSession.manifest.cloudSyncEnabled) {
       return
     }
+
+    const uploadedParts = Number(payload.uploadedParts || 0)
+    const totalParts = Number(payload.totalParts || 0)
 
     runtimeSession.manifest.cloudSync.sessionCreated = true
     runtimeSession.manifest.cloudSync.sessionStatus = 'created'
@@ -131,8 +151,8 @@ export function createCloudSyncRuntime({
       typeof payload.mergeStatus === 'string' && payload.mergeStatus
         ? payload.mergeStatus
         : runtimeSession.manifest.cloudSync.mergeStatus
-    runtimeSession.manifest.cloudSync.uploadedSegments = Number(payload.uploadedSegments || 0)
-    runtimeSession.manifest.cloudSync.totalSegments = Number(payload.totalSegments || 0)
+    runtimeSession.manifest.cloudSync.uploadedParts = uploadedParts
+    runtimeSession.manifest.cloudSync.totalParts = totalParts
     runtimeSession.manifest.cloudSync.remoteVideoUrl =
       typeof payload.remoteVideoUrl === 'string' ? payload.remoteVideoUrl : ''
     runtimeSession.manifest.cloudSync.remoteVideoPath =
@@ -141,18 +161,22 @@ export function createCloudSyncRuntime({
       typeof payload.lastError === 'string' ? payload.lastError : ''
   }
 
-  async function uploadRecordingSessionSegment(runtimeSession, segment) {
-    if (!runtimeSession.manifest.cloudSyncEnabled || !segment?.path || !existsSync(segment.path)) {
+  /** Uploads one completed part file to the server.
+   * @param {object} runtimeSession Cloud-sync-enabled runtime session.
+   * @param {object} part Ready part descriptor from the manifest.
+   */
+  async function uploadCloudSyncPart(runtimeSession, part) {
+    if (!runtimeSession.manifest.cloudSyncEnabled || !part?.path || !existsSync(part.path)) {
       return
     }
 
-    if (segment.uploadStatus === 'uploaded') {
+    if (part.uploadStatus === 'uploaded') {
       return
     }
 
     await ensureCloudSyncRemoteSession(runtimeSession)
 
-    segment.uploadStatus = 'uploading'
+    part.uploadStatus = 'uploading'
     runtimeSession.manifest.cloudSync.uploadStatus = 'uploading'
     runtimeSession.manifest.cloudSync.lastError = ''
     runtimeSession.manifest.cloudSync.lastAttemptAt = Date.now()
@@ -160,11 +184,11 @@ export function createCloudSyncRuntime({
     await persistRecordingSessionManifest(runtimeSession)
 
     try {
-      const checksum = await sha256File(segment.path)
-      const body = await readFile(segment.path)
+      const checksum = await sha256File(part.path)
+      const body = await readFile(part.path)
       const payload = await cloudSyncFetchJson(
         runtimeSession,
-        `/api/cloud-sync/sessions/${encodeURIComponent(runtimeSession.id)}/segments/${segment.index}`,
+        `/api/cloud-sync/sessions/${encodeURIComponent(runtimeSession.id)}/parts/${part.index}`,
         {
           method: 'PUT',
           headers: {
@@ -176,36 +200,48 @@ export function createCloudSyncRuntime({
         }
       )
 
-      segment.checksum = checksum
-      segment.etag = typeof payload.etag === 'string' ? payload.etag : checksum
-      segment.uploadStatus = 'uploaded'
-      segment.uploadedAt = Date.now()
-      segment.retryCount = Number(segment.retryCount || 0)
-      runtimeSession.manifest.cloudSync.lastUploadedSegmentIndex = segment.index
+      part.checksum = checksum
+      part.etag = typeof payload.etag === 'string' ? payload.etag : checksum
+      part.uploadStatus = 'uploaded'
+      part.uploadedAt = Date.now()
+      part.retryCount = Number(part.retryCount || 0)
+      runtimeSession.manifest.cloudSync.lastUploadedPartIndex = part.index
       updateCloudSyncStateFromRemote(runtimeSession, {
         ...payload,
-        uploadedSegments: runtimeSession.manifest.segments.filter(
+        uploadedParts: runtimeSession.manifest.segments.filter(
           (item) => item.uploadStatus === 'uploaded'
         ).length,
-        totalSegments: runtimeSession.manifest.segments.length
+        totalParts: runtimeSession.manifest.segments.length
       })
       runtimeSession.manifest.cloudSync.lastAttemptAt = Date.now()
       runtimeSession.manifest.cloudSync.nextRetryAt = null
       await persistRecordingSessionManifest(runtimeSession)
     } catch (error) {
-      segment.uploadStatus = 'failed'
-      segment.retryCount = Number(segment.retryCount || 0) + 1
+      part.uploadStatus = 'failed'
+      part.retryCount = Number(part.retryCount || 0) + 1
       runtimeSession.manifest.cloudSync.uploadStatus = 'failed'
       runtimeSession.manifest.cloudSync.lastError =
-        error instanceof Error ? error.message : 'Failed to upload recording segment.'
+        error instanceof Error ? error.message : 'Failed to upload cloud sync part.'
       runtimeSession.manifest.cloudSync.lastAttemptAt = Date.now()
       runtimeSession.manifest.cloudSync.nextRetryAt =
-        Date.now() + getCloudSyncRetryDelayMs(segment.retryCount)
+        Date.now() + getCloudSyncRetryDelayMs(part.retryCount)
       await persistRecordingSessionManifest(runtimeSession)
       throw error
     }
   }
 
+  /** Counts locally ready parts that should be included in `complete`. */
+  function getReadyCloudSyncPartCount(runtimeSession) {
+    return runtimeSession.manifest.segments.filter((part) => part.status === 'ready').length
+  }
+
+  /** Counts parts that the server has already accepted. */
+  function getUploadedCloudSyncPartCount(runtimeSession) {
+    return runtimeSession.manifest.segments.filter((part) => part.uploadStatus === 'uploaded')
+      .length
+  }
+
+  /** Tells the server no more parts will arrive for this session. */
   async function completeCloudSyncRecordingSession(runtimeSession) {
     if (!runtimeSession.manifest.cloudSyncEnabled) {
       return
@@ -226,9 +262,7 @@ export function createCloudSyncRuntime({
           },
           body: JSON.stringify({
             stoppedAt: runtimeSession.manifest.stoppedAt || Date.now(),
-            segmentCount: runtimeSession.manifest.segments.filter(
-              (segment) => segment.status === 'ready'
-            ).length,
+            partCount: getReadyCloudSyncPartCount(runtimeSession),
             totalBytes: runtimeSession.manifest.totalBytes
           })
         }
@@ -249,6 +283,7 @@ export function createCloudSyncRuntime({
     }
   }
 
+  /** Polls the server for merge status and performs local cleanup on success. */
   async function syncCloudRecordingSessionStatus(runtimeSession) {
     if (
       !runtimeSession.manifest.cloudSyncEnabled ||
@@ -291,30 +326,30 @@ export function createCloudSyncRuntime({
     return false
   }
 
+  /** Runs one upload/complete/status cycle for a cloud-sync session. */
   async function processCloudSyncSession(runtimeSession) {
     if (!runtimeSession.manifest.cloudSyncEnabled) {
       clearCloudSyncWorker(runtimeSession.id)
       return
     }
 
-    const pendingSegments = getPendingCloudSyncSegments(runtimeSession)
-    for (const segment of pendingSegments) {
+    const pendingParts = getPendingCloudSyncParts(runtimeSession)
+    for (const part of pendingParts) {
       try {
-        await uploadRecordingSessionSegment(runtimeSession, segment)
+        await uploadCloudSyncPart(runtimeSession, part)
       } catch {
         return {
-          retryDelayMs: getCloudSyncRetryDelayMs(segment.retryCount)
+          retryDelayMs: getCloudSyncRetryDelayMs(part.retryCount)
         }
       }
     }
 
-    const allReadySegmentsUploaded = runtimeSession.manifest.segments
-      .filter((segment) => segment.status === 'ready')
-      .every((segment) => segment.uploadStatus === 'uploaded')
+    const allReadyPartsUploaded =
+      getReadyCloudSyncPartCount(runtimeSession) === getUploadedCloudSyncPartCount(runtimeSession)
 
     if (
       runtimeSession.manifest.status === 'stopped' &&
-      allReadySegmentsUploaded &&
+      allReadyPartsUploaded &&
       !runtimeSession.manifest.cloudSync.completedAt
     ) {
       const completed = await completeCloudSyncRecordingSession(runtimeSession)

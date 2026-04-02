@@ -1,8 +1,17 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import { isLikelyPermissionError, sleep } from '../utils/recordingUtils'
 
-const SEGMENT_DURATION_MS = 5_000
-
+/** Renderer-side recording controller.
+ * Owns permission flow, continuous `MediaRecorder` capture, list refresh, and IPC calls
+ * into the main-process recording runtime.
+ *
+ * @param {object} options Hook options supplied by the page shell.
+ * @param {boolean} options.isPlayerWindow Whether this renderer is the dedicated player window.
+ * @param {string} options.playerName Name displayed by the player window.
+ * @param {string} options.preferredMimeType Preferred recorder mime type, when supported.
+ * @param {(result: any, setRecordingStats: Function) => void} options.applySessionStats
+ * Maps main-process status payloads into the page's live recording stats state.
+ */
 export function useScreenRecordingController({
   isPlayerWindow,
   playerName,
@@ -35,9 +44,10 @@ export function useScreenRecordingController({
 
   const isRecording = recordState === 'recording'
   const isBusy = recordState === 'starting' || recordState === 'saving'
-  const displayedCurrentSegmentBytes =
-    liveSegmentBytes > 0 ? liveSegmentBytes : Number(recordingStats?.currentSegmentBytes || 0)
+  const displayedCurrentPartBytes =
+    liveSegmentBytes > 0 ? liveSegmentBytes : Number(recordingStats?.currentPartBytes || 0)
 
+  /** Applies one main-process status payload into renderer stats state. */
   const syncStats = useCallback(
     (result) => {
       applySessionStats(result, setRecordingStats)
@@ -45,6 +55,7 @@ export function useScreenRecordingController({
     [applySessionStats]
   )
 
+  /** Clears the renderer-side segment timer, retained only for cleanup symmetry. */
   const stopSegmentTimer = useCallback(() => {
     if (segmentStopTimerRef.current) {
       clearTimeout(segmentStopTimerRef.current)
@@ -52,6 +63,7 @@ export function useScreenRecordingController({
     }
   }, [])
 
+  /** Resets refs and state scoped to the current active recording session. */
   const resetSessionRuntimeState = useCallback(() => {
     recordingSessionIdRef.current = ''
     isStoppingRef.current = false
@@ -61,6 +73,7 @@ export function useScreenRecordingController({
     setRecordingStats(null)
   }, [])
 
+  /** Stops the elapsed-time interval shown in the toolbar. */
   const stopTimer = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current)
@@ -68,6 +81,7 @@ export function useScreenRecordingController({
     }
   }, [])
 
+  /** Releases the current display stream and all of its tracks. */
   const releaseStream = useCallback(() => {
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((track) => track.stop())
@@ -75,6 +89,7 @@ export function useScreenRecordingController({
     }
   }, [])
 
+  /** Resets renderer recorder objects after stop or cancel completes. */
   const resetRecorderState = useCallback(() => {
     stopSegmentTimer()
     mediaRecorderRef.current = null
@@ -84,11 +99,13 @@ export function useScreenRecordingController({
     setRecordState('idle')
   }, [releaseStream, stopSegmentTimer, stopTimer])
 
+  /** Serializes chunk IPC writes so chunks preserve order. */
   const enqueueChunkTask = useCallback((task) => {
     chunkQueueRef.current = chunkQueueRef.current.then(task, task)
     return chunkQueueRef.current
   }, [])
 
+  /** Stops the active main-process session when recording finishes normally. */
   const stopSessionIfNeeded = useCallback(async () => {
     const sessionId = recordingSessionIdRef.current
     if (!sessionId || typeof window.api?.stopScreenRecordingSession !== 'function') {
@@ -105,6 +122,7 @@ export function useScreenRecordingController({
     }
   }, [resetSessionRuntimeState, syncStats])
 
+  /** Cancels the active main-process session when the user discards the recording. */
   const cancelSessionIfNeeded = useCallback(async () => {
     const sessionId = recordingSessionIdRef.current
     if (!sessionId || typeof window.api?.cancelScreenRecordingSession !== 'function') {
@@ -119,6 +137,7 @@ export function useScreenRecordingController({
     }
   }, [resetSessionRuntimeState])
 
+  /** Refreshes the rendered recording list from the main-process catalog. */
   const loadRecordings = useCallback(async () => {
     setIsLoadingList(true)
 
@@ -136,6 +155,7 @@ export function useScreenRecordingController({
     }
   }, [])
 
+  /** Reads permission state without throwing when preload APIs are unavailable. */
   const getScreenRecordingPermissionStatusSafe = useCallback(async () => {
     if (typeof window.api?.getScreenRecordingPermissionStatus !== 'function') {
       return {
@@ -147,6 +167,7 @@ export function useScreenRecordingController({
     return window.api.getScreenRecordingPermissionStatus()
   }, [])
 
+  /** Converts startup failures into actionable permission guidance for the user. */
   const applyPermissionGuidance = useCallback(
     async (error) => {
       const baseMessage = `Unable to start screen recording: ${error?.message || 'Unknown error.'}`
@@ -188,6 +209,10 @@ export function useScreenRecordingController({
     [getScreenRecordingPermissionStatusSafe]
   )
 
+  /** Starts one recording session for the selected source and cloud-sync mode.
+   * @param {string} sourceId Selected display/window source id.
+   * @param {boolean} cloudSyncEnabled Whether cloud upload should run in parallel.
+   */
   const beginRecordingWithSource = useCallback(
     async (sourceId, cloudSyncEnabled) => {
       if (!sourceId) {
@@ -203,7 +228,6 @@ export function useScreenRecordingController({
       if (
         typeof window.api?.startScreenRecordingSession !== 'function' ||
         typeof window.api?.appendScreenRecordingChunk !== 'function' ||
-        typeof window.api?.rotateScreenRecordingSegment !== 'function' ||
         typeof window.api?.stopScreenRecordingSession !== 'function'
       ) {
         setStatusMessage('录屏分段 API 不可用，请重启 Electron 应用进程。')
@@ -248,7 +272,7 @@ export function useScreenRecordingController({
 
         const sessionResult = await window.api.startScreenRecordingSession({
           mimeType: seedRecorder.mimeType || preferredMimeType || 'video/webm',
-          segmentDurationMs: SEGMENT_DURATION_MS,
+          segmentDurationMs: 0,
           cloudSyncEnabled
         })
         if (!sessionResult?.ok || !sessionResult.sessionId) {
@@ -312,83 +336,55 @@ export function useScreenRecordingController({
           }
         }
 
-        const startSegmentRecorder = () => {
-          const segmentRecorder = preferredMimeType
+        const startContinuousRecorder = () => {
+          const recorder = preferredMimeType
             ? new window.MediaRecorder(stream, { mimeType: preferredMimeType })
             : new window.MediaRecorder(stream)
-          const segmentChunks = []
 
-          mediaRecorderRef.current = segmentRecorder
+          mediaRecorderRef.current = recorder
           setLiveSegmentBytes(0)
 
-          segmentRecorder.ondataavailable = (event) => {
-            if (event.data && event.data.size > 0) {
-              segmentChunks.push(event.data)
-              setLiveSegmentBytes((previous) => previous + event.data.size)
-            }
-          }
-
-          segmentRecorder.onerror = (event) => {
-            setStatusMessage(`录屏失败：${event?.error?.message || '未知录制错误。'}`)
-          }
-
-          segmentRecorder.onstop = async () => {
-            stopSegmentTimer()
-
-            const segmentBlob =
-              segmentChunks.length > 0
-                ? new Blob(segmentChunks, {
-                    type: segmentRecorder.mimeType || preferredMimeType || 'video/webm'
-                  })
-                : null
-
-            try {
-              await enqueueChunkTask(async () => {
-                const sessionId = recordingSessionIdRef.current
-                if (!sessionId) {
-                  return
-                }
-
-                if (segmentBlob?.size) {
-                  const chunkBuffer = await segmentBlob.arrayBuffer()
-                  const appendResult = await window.api.appendScreenRecordingChunk({
-                    sessionId,
-                    chunk: chunkBuffer
-                  })
-                  if (!appendResult?.ok) {
-                    throw new Error(appendResult?.message || '写入录屏分片失败。')
-                  }
-                  syncStats(appendResult)
-                }
-
-                if (!isStoppingRef.current) {
-                  const rotateResult = await window.api.rotateScreenRecordingSegment({ sessionId })
-                  if (!rotateResult?.ok) {
-                    throw new Error(rotateResult?.message || '切换录屏分段失败。')
-                  }
-                  syncStats(rotateResult)
-                }
-              })
-            } catch (error) {
-              setStatusMessage(`录屏写入失败：${error?.message || '未知错误。'}`)
-              isStoppingRef.current = true
-            }
-
-            if (isStoppingRef.current) {
-              await finalizeRecording()
+          recorder.ondataavailable = (event) => {
+            if (!event.data || event.data.size <= 0) {
               return
             }
 
-            startSegmentRecorder()
+            setLiveSegmentBytes((previous) => previous + event.data.size)
+            enqueueChunkTask(async () => {
+              const sessionId = recordingSessionIdRef.current
+              if (!sessionId) {
+                return
+              }
+
+              const chunkBuffer = await event.data.arrayBuffer()
+              const appendResult = await window.api.appendScreenRecordingChunk({
+                sessionId,
+                chunk: chunkBuffer
+              })
+              if (!appendResult?.ok) {
+                throw new Error(appendResult?.message || '写入录屏分片失败。')
+              }
+              syncStats(appendResult)
+            }).catch((error) => {
+              setStatusMessage(`录屏写入失败：${error?.message || '未知错误。'}`)
+              isStoppingRef.current = true
+              stopSegmentTimer()
+              if (mediaRecorderRef.current?.state === 'recording') {
+                mediaRecorderRef.current.stop()
+              }
+            })
           }
 
-          segmentRecorder.start(1000)
-          stopSegmentTimer()
-          segmentStopTimerRef.current = window.setTimeout(() => {
-            if (segmentRecorder.state === 'recording' && !isStoppingRef.current) {
-              segmentRecorder.stop()
-            }
-          }, SEGMENT_DURATION_MS)
+          recorder.onerror = (event) => {
+            setStatusMessage(`录屏失败：${event?.error?.message || '未知录制错误。'}`)
+          }
+
+          recorder.onstop = async () => {
+            stopSegmentTimer()
+            await finalizeRecording()
+          }
+
+          recorder.start(1000)
         }
 
         const [videoTrack] = stream.getVideoTracks()
@@ -402,7 +398,7 @@ export function useScreenRecordingController({
           })
         }
 
-        startSegmentRecorder()
+        startContinuousRecorder()
       } catch (error) {
         await stopSessionIfNeeded()
         resetRecorderState()
@@ -662,18 +658,18 @@ export function useScreenRecordingController({
 
   const handleDeleteRecordingWithGuard = useCallback(
     async (item) => {
-      const pendingSegments = Number(item?.cloudSync?.pendingSegments || 0)
-      const failedSegments = Number(item?.cloudSync?.failedSegments || 0)
+      const pendingParts = Number(item?.cloudSync?.pendingParts || 0)
+      const failedParts = Number(item?.cloudSync?.failedParts || 0)
       const cloudSyncIncomplete =
         item?.cloudSync?.enabled &&
-        (pendingSegments > 0 ||
-          failedSegments > 0 ||
+        (pendingParts > 0 ||
+          failedParts > 0 ||
           item?.cloudSync?.mergeStatus === 'merge_failed' ||
           item?.cloudSync?.mergeStatus === 'uploading')
 
       if (cloudSyncIncomplete) {
         const confirmed = window.confirm(
-          `该视频的云同步尚未完成。\n待同步分片：${pendingSegments}\n失败分片：${failedSegments}\n删除后将无法继续补传。\n\n确定仍要删除吗？`
+          `该视频的云同步尚未完成。\n待同步分片：${pendingParts}\n失败分片：${failedParts}\n删除后将无法继续补传。\n\n确定仍要删除吗？`
         )
         if (!confirmed) {
           return
@@ -699,7 +695,7 @@ export function useScreenRecordingController({
     elapsedSec,
     statusMessage,
     recordingStats,
-    displayedCurrentSegmentBytes,
+    displayedCurrentPartBytes,
     isRecording,
     isBusy,
     loadRecordings,

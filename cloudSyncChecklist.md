@@ -1,81 +1,79 @@
 # Cloud Sync Checklist
 
-## Phase 1: Protocol
+## Phase 1: Continuous Local Recording
 
-- [x] Renderer sends `cloudSyncEnabled` with session start.
-- [x] Main process persists `cloudSyncEnabled` into recording session manifest.
-- [x] Main process creates a remote cloud-sync session before first segment upload.
-- [ ] Segment upload client sends:
-  - [x] `sessionId`
-  - [x] `segmentIndex`
-  - [x] raw segment bytes
-  - [x] `X-Checksum-Sha256`
-  - [x] `X-File-Size`
-- [x] Client notifies `/complete` after final local segment is finalized.
-- [x] Client polls session status until `merged` or `merge_failed`.
+- [x] Renderer keeps a single continuous `MediaRecorder`.
+- [x] Main process continuously appends chunks to one local session file.
+- [ ] Local final output no longer depends on multi-segment merge for cloud sync.
+- [ ] Stop flow closes local file, renames final output, probes duration, writes SQLite.
 
-## Phase 2: Local Persistence
+## Phase 2: Part Model
 
-- [x] Extend local session manifest to include:
-  - [x] `cloudSyncEnabled`
-  - [x] remote upload state
-  - [x] per-segment upload status
-  - [x] retry count
-  - [x] checksum
-  - [x] remote object key / etag
-- [x] Keep local segments until remote merge succeeds.
-- [x] Recover pending uploads on app restart.
+- [ ] Replace cloud-sync `segments` with upload `parts`.
+- [ ] Define part boundary by stable flushed bytes, not by 5s media segments.
+- [ ] Add `cloud_sync_parts` table in SQLite.
+- [ ] Track:
+  - [ ] `part_index`
+  - [ ] `offset_start`
+  - [ ] `offset_end`
+  - [ ] `size_bytes`
+  - [ ] `status`
+  - [ ] `checksum`
+  - [ ] `retry_count`
+  - [ ] `uploaded_at`
 
-## Phase 3: Upload Queue
+## Phase 3: Main Process Upload Queue
 
-- [x] Add background upload queue separate from recording writes.
-- [x] Limit upload concurrency to `1` per session.
-- [x] Add exponential backoff retries.
+- [ ] Generate upload parts from continuously written local file.
+- [ ] Queue pending parts in background without blocking recording writes.
+- [ ] Limit concurrency to `1` per session.
+- [ ] Retry failed parts with exponential backoff.
 - [ ] Pause queue when offline.
 - [ ] Resume queue when network returns.
-- [x] Make uploads idempotent by `sessionId + segmentIndex + checksum`.
+- [ ] Recover pending parts from SQLite on app restart.
 
-## Phase 4: Server
+## Phase 4: Server Protocol
 
-- [x] `POST /api/cloud-sync/sessions`
-- [x] `PUT /api/cloud-sync/sessions/:sessionId/segments/:index`
-- [x] `POST /api/cloud-sync/sessions/:sessionId/complete`
-- [x] `GET /api/cloud-sync/sessions/:sessionId`
-- [x] `GET /api/cloud-sync/sessions/:sessionId/merged`
-- [x] Split server startup shell from cloud-sync business module.
-- [ ] Persist upload token / auth validation.
-- [ ] Store per-segment metadata in durable manifest.
-- [ ] Add merge worker retry policy.
-- [ ] Add cleanup retention policy.
+- [ ] Keep `POST /api/cloud-sync/sessions`.
+- [ ] Add `PUT /api/cloud-sync/sessions/:sessionId/parts/:partIndex`.
+- [ ] Update `POST /api/cloud-sync/sessions/:sessionId/complete` to use `partCount`.
+- [ ] Update `GET /api/cloud-sync/sessions/:sessionId` to return part-based progress.
+- [ ] Persist per-part metadata durably on server.
+- [ ] Keep upload idempotent by `sessionId + partIndex + checksum`.
 
 ## Phase 5: Integrity
 
-- [x] Calculate SHA-256 for uploaded segments on server.
-- [x] Calculate SHA-256 on client after local segment finalization.
-- [x] Reject mismatched checksum with explicit retry path.
-- [x] Reject conflicting checksum for same segment index.
+- [ ] Calculate SHA-256 for each upload part on client.
+- [ ] Validate checksum and size on server.
+- [ ] Reject checksum conflicts for same `partIndex`.
+- [ ] Treat duplicate same-checksum upload as success.
 
-## Phase 6: UI
+## Phase 6: Recovery
 
-- [x] Show cloud session status in recording metrics.
-- [x] Show uploaded / pending / failed segment counts.
-- [ ] Show cloud merge result on video cards or detail panel.
-- [ ] Add retry sync button for failed sessions.
-- [ ] Add "sync pending" warning before deleting local files.
+- [ ] Restore unfinished local recording sessions from SQLite.
+- [ ] Restore unfinished cloud sync sessions from SQLite.
+- [ ] Restore pending and failed parts from SQLite.
+- [ ] Continue uploads after restart without scanning manifest files.
 
-## Phase 7: Edge Cases
+## Phase 7: Cleanup
 
-- [ ] Handle final segment shorter than 5s.
-- [ ] Ignore zero-byte final segment safely.
-- [x] Recover from app crash during upload.
-- [x] Recover from app crash during merge polling.
-- [ ] Preserve local output if remote merge fails.
-- [x] Delay local cleanup until remote merge succeeds.
+- [ ] Do not delete local temp data until remote `merged`.
+- [ ] After remote `merged`, delete temp upload artifacts and part rows.
+- [ ] Preserve final local video.
+- [ ] Expose cleanup failure as explicit state, not silent success.
+
+## Phase 8: UI
+
+- [ ] Show `pending / uploading / failed` part counts.
+- [ ] Show remote merge state clearly.
+- [ ] Show retry entry for failed cloud sync session.
+- [ ] Warn before deleting a local video with unfinished cloud sync.
 
 ## Validation
 
-- [ ] Record 30s on strong network and verify remote merge.
-- [ ] Record 30s on throttled/high-latency network and verify eventual merge.
+- [ ] Record 30s with cloud sync on and verify uploads happen during recording.
+- [ ] Record 30s on high latency network and verify eventual success.
 - [ ] Disconnect network mid-recording and verify local recording continues.
-- [ ] Restore network and verify pending segments resume upload.
-- [ ] Restart app with pending cloud-sync session and verify recovery.
+- [ ] Restore network and verify pending parts resume upload.
+- [ ] Restart app with pending session and verify SQLite-based recovery.
+- [ ] Verify final local video duration matches actual recording closely.

@@ -5,10 +5,12 @@ import { RECORDING_METADATA_DB_FILE_NAME, getRecordingsDirectoryPath } from './r
 
 let recordingMetadataDb = null
 
+/** Returns the absolute SQLite path used by the recording subsystem. */
 export function getRecordingMetadataDatabasePath() {
   return join(getRecordingsDirectoryPath(), RECORDING_METADATA_DB_FILE_NAME)
 }
 
+/** Opens the SQLite database and creates required tables on first access. */
 export function getRecordingMetadataDatabase() {
   if (recordingMetadataDb) {
     return recordingMetadataDb
@@ -81,9 +83,9 @@ export function getRecordingMetadataDatabase() {
       updated_at INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS cloud_sync_segments (
+    CREATE TABLE IF NOT EXISTS cloud_sync_parts (
       session_id TEXT NOT NULL,
-      segment_index INTEGER NOT NULL,
+      part_index INTEGER NOT NULL,
       file_path TEXT,
       status TEXT,
       upload_status TEXT,
@@ -95,13 +97,17 @@ export function getRecordingMetadataDatabase() {
       started_at INTEGER,
       ended_at INTEGER,
       updated_at INTEGER NOT NULL,
-      PRIMARY KEY (session_id, segment_index)
+      PRIMARY KEY (session_id, part_index)
     );
   `)
   recordingMetadataDb = db
   return db
 }
 
+/** Runs synchronous SQLite work inside one transaction.
+ * @param {DatabaseSync} db Open SQLite connection.
+ * @param {() => any} work Synchronous unit of work to run inside BEGIN/COMMIT.
+ */
 export function runDatabaseTransaction(db, work) {
   db.exec('BEGIN')
   try {

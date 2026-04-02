@@ -83,3 +83,113 @@ await window.api.debugScreenRecordingAccess()
    - `recordingsDir` 指向 `~/Downloads/Recording`
    - `ffmpegPath` 可执行
    - `fileExists/posterExists` 均为 `true`
+## Recording And Cloud Sync Pipeline
+
+### End To End Work Chain
+
+The current recording pipeline is split into three layers:
+
+1. Renderer capture layer  
+   `src/renderer/src/hooks/useScreenRecordingController.js`  
+   The renderer owns screen permission, `getDisplayMedia`, the single continuous `MediaRecorder`, and periodic `ondataavailable` chunk emission.
+
+2. Main-process persistence and orchestration layer  
+   `src/main/recording.js` and the `src/main/recording*.js` modules  
+   The main process owns session lifecycle, SQLite persistence, disk writes, local output finalization, cloud sync queue scheduling, and recovery.
+
+3. Cloud sync server layer  
+   `server/cloudSyncServer.js`  
+   The server accepts upload parts, stores them by `partIndex`, and merges them by byte order after the client completes the session.
+
+### Call Chain
+
+#### Local recording start
+
+1. The renderer calls `window.api.startScreenRecordingSession(...)`.
+2. `src/main/recordingHandlers.js` forwards the IPC call into `createRecordingSession(...)`.
+3. `src/main/recordingSessions.js` creates a runtime session and opens the first writable target.
+4. Session state is persisted into SQLite through `persistRecordingSessionManifest(...)`.
+
+#### Continuous capture and disk writes
+
+1. The renderer creates a single `MediaRecorder`.
+2. `MediaRecorder.start(1000)` emits one chunk roughly every second.
+3. Each chunk is sent through `window.api.appendScreenRecordingChunk(...)`.
+4. `src/main/recordingSegments.js` parses the payload into a `Buffer`.
+5. The buffer is appended to disk immediately.
+
+#### Local-only recording
+
+When cloud sync is disabled:
+
+- The main process writes directly into the current local segment file.
+- Stop recording finalizes the last segment.
+- If there is more than one local segment, the main process merges them into the final local video.
+- After the final output is ready, the session directory is deleted.
+
+#### Cloud-sync recording
+
+When cloud sync is enabled:
+
+- The main process writes every chunk into one continuous local capture file: `capture.<ext>.part`
+- The same chunk is also written into the current transport part file: `part-0001.bin`, `part-0002.bin`, and so on
+- Transport parts are cut by size threshold, not by a timed recorder restart
+- Once a part reaches the configured threshold, it is sealed and queued for upload
+- The continuous local capture file stays open until the user stops recording
+- Stop recording closes the continuous capture file and renames it into the final local video
+
+### Disk Persistence Strategy
+
+#### Local output strategy
+
+- A recording session always has a dedicated session directory under `~/Downloads/Recording/sessions/<sessionId>`
+- Local metadata is persisted in SQLite, not in `manifest.json`
+- During recording, chunks are written immediately to disk so the renderer does not keep the full recording in memory
+
+#### Cloud-sync strategy
+
+- The local source of truth for playback is the continuous capture file
+- Upload parts are transport artifacts only
+- Upload parts are stored in the session directory until the server reports `merged`
+- After cloud merge succeeds, the session directory is cleaned
+
+### Upload Strategy
+
+The upload model is `parts`, not media segments.
+
+- A part is a transport unit for retry and resume
+- A part is not assumed to be an independently playable video file
+- The client uploads each completed part to `PUT /api/cloud-sync/sessions/:sessionId/parts/:partIndex`
+- The client later calls `POST /api/cloud-sync/sessions/:sessionId/complete`
+- The server merges uploaded parts by byte order, not by ffmpeg media concat
+
+### Why This Design
+
+This design solves three problems from the earlier implementation:
+
+1. It avoids recorder `stop/start` gaps that shortened the final duration.
+2. It avoids keeping the full recording in renderer memory.
+3. It separates local playback correctness from cloud transport batching.
+
+### Main Modules
+
+- `src/main/recording.js`  
+  Composition root for the recording system.
+- `src/main/recordingHandlers.js`  
+  IPC registration layer.
+- `src/main/recordingSessions.js`  
+  Recording session lifecycle orchestration.
+- `src/main/recordingSegments.js`  
+  Chunk append, part cut, stream finalization.
+- `src/main/recordingRecovery.js`  
+  Local merge, cleanup, and recovery flows.
+- `src/main/cloudSyncRuntime.js`  
+  Background upload, retry, complete, and status polling.
+- `src/main/recordingSessionState.js`  
+  Runtime summary building and SQLite sync orchestration.
+- `src/main/recordingDbCore.js`  
+  SQLite connection and transaction primitives.
+- `src/main/recordingDb.js`  
+  Recording and cloud-sync persistence access layer.
+- `server/cloudSyncServer.js`  
+  Cloud sync HTTP server and remote part merge implementation.

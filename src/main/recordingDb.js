@@ -6,6 +6,9 @@ export {
   createRuntimeSessionFromRecordingDatabaseRecord
 } from './recordingDbRuntime'
 
+/** Normalizes one joined metadata row into the shape consumed by the catalog layer.
+ * @param {any} row Raw SQLite row.
+ */
 function normalizeRecordingMetadataRecord(row) {
   if (!row || typeof row !== 'object') {
     return null
@@ -27,6 +30,9 @@ function normalizeRecordingMetadataRecord(row) {
   }
 }
 
+/** Reads duration and cloud-sync metadata for one finalized local output.
+ * @param {string} filePath Absolute local output path.
+ */
 export function readRecordingMetadataFromDatabase(filePath) {
   const db = getRecordingMetadataDatabase()
   const row = db
@@ -46,6 +52,10 @@ export function readRecordingMetadataFromDatabase(filePath) {
   return normalizeRecordingMetadataRecord(row)
 }
 
+/** Upserts metadata for one finalized local output.
+ * @param {string} filePath Absolute local output path.
+ * @param {{durationSec?: number|null, cloudSync?: object|null}} metadata Metadata to persist.
+ */
 export function writeRecordingMetadataToDatabase(filePath, metadata) {
   const db = getRecordingMetadataDatabase()
   const durationSec = Number(metadata?.durationSec || 0)
@@ -88,6 +98,9 @@ export function writeRecordingMetadataToDatabase(filePath, metadata) {
   })
 }
 
+/** Deletes metadata for a finalized local output after the file is removed.
+ * @param {string} filePath Absolute local output path.
+ */
 export function deleteRecordingMetadataFromDatabase(filePath) {
   const db = getRecordingMetadataDatabase()
   const normalizedPath = resolve(filePath)
@@ -97,6 +110,9 @@ export function deleteRecordingMetadataFromDatabase(filePath) {
   })
 }
 
+/** Mirrors the cloud-sync state of one runtime session into SQLite.
+ * @param {object} runtimeSession Active or recovered runtime session.
+ */
 export function syncCloudSessionToDatabase(runtimeSession) {
   if (!runtimeSession?.manifest?.cloudSyncEnabled) {
     return
@@ -152,12 +168,12 @@ export function syncCloudSessionToDatabase(runtimeSession) {
       updatedAt
     )
 
-    db.prepare('DELETE FROM cloud_sync_segments WHERE session_id = ?').run(runtimeSession.id)
-    const insertSegment = db.prepare(
+    db.prepare('DELETE FROM cloud_sync_parts WHERE session_id = ?').run(runtimeSession.id)
+    const insertPart = db.prepare(
       `
-        INSERT INTO cloud_sync_segments (
+        INSERT INTO cloud_sync_parts (
           session_id,
-          segment_index,
+          part_index,
           file_path,
           status,
           upload_status,
@@ -175,7 +191,7 @@ export function syncCloudSessionToDatabase(runtimeSession) {
     )
 
     for (const segment of runtimeSession.manifest.segments) {
-      insertSegment.run(
+      insertPart.run(
         runtimeSession.id,
         Number(segment.index || 0),
         segment.path ? resolve(segment.path) : null,
@@ -194,6 +210,9 @@ export function syncCloudSessionToDatabase(runtimeSession) {
   })
 }
 
+/** Deletes one persisted cloud-sync session and its part rows.
+ * @param {string} sessionId Recording session id.
+ */
 export function deleteCloudSessionFromDatabase(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return
@@ -201,11 +220,14 @@ export function deleteCloudSessionFromDatabase(sessionId) {
 
   const db = getRecordingMetadataDatabase()
   runDatabaseTransaction(db, () => {
-    db.prepare('DELETE FROM cloud_sync_segments WHERE session_id = ?').run(sessionId)
+    db.prepare('DELETE FROM cloud_sync_parts WHERE session_id = ?').run(sessionId)
     db.prepare('DELETE FROM cloud_sync_sessions WHERE session_id = ?').run(sessionId)
   })
 }
 
+/** Mirrors local session state and per-part rows into SQLite.
+ * @param {object} runtimeSession Active or recovered runtime session.
+ */
 export function syncRecordingSessionToDatabase(runtimeSession) {
   if (!runtimeSession?.id || !runtimeSession?.manifest) {
     return
@@ -391,7 +413,7 @@ export function readCloudSyncSessionRowsFromDatabase(sessionId) {
     .prepare(
       `
         SELECT
-          segment_index AS "index",
+          part_index AS "index",
           file_path AS filePath,
           status,
           upload_status AS uploadStatus,
@@ -403,9 +425,9 @@ export function readCloudSyncSessionRowsFromDatabase(sessionId) {
           started_at AS startedAt,
           ended_at AS endedAt,
           updated_at AS updatedAt
-        FROM cloud_sync_segments
+        FROM cloud_sync_parts
         WHERE session_id = ?
-        ORDER BY segment_index ASC
+        ORDER BY part_index ASC
       `
     )
     .all(normalizedSessionId)

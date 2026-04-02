@@ -191,9 +191,9 @@ function App() {
     }
 
     setRecordingStats({
-      segmentCount: Number(result.segmentCount || 0),
-      currentSegmentIndex: Number(result.currentSegmentIndex || 0),
-      currentSegmentBytes: Number(result.currentSegmentBytes || 0),
+      partCount: Number(result.partCount || 0),
+      currentPartIndex: Number(result.currentPartIndex || 0),
+      currentPartBytes: Number(result.currentPartBytes || 0),
       totalBytes: Number(result.totalBytes || 0),
       freeBytes: Number(result.storage?.freeBytes || 0),
       lowDiskSpace: Boolean(result.storage?.lowDiskSpace),
@@ -215,7 +215,7 @@ function App() {
     elapsedSec,
     statusMessage,
     recordingStats,
-    displayedCurrentSegmentBytes,
+    displayedCurrentPartBytes,
     isRecording,
     isBusy,
     loadRecordings,
@@ -257,13 +257,13 @@ function App() {
               <MetricsRow>
                 <MetricPill>已写入 {formatBytes(recordingStats.totalBytes)}</MetricPill>
                 <MetricPill>
-                  当前分段 #{recordingStats.currentSegmentIndex || 1} ·{' '}
-                  {formatBytes(displayedCurrentSegmentBytes)}
+                  当前分片 #{recordingStats.currentPartIndex || 1} ·{' '}
+                  {formatBytes(displayedCurrentPartBytes)}
                 </MetricPill>
-                <MetricPill>分段数 {recordingStats.segmentCount}</MetricPill>
+                <MetricPill>分片数 {recordingStats.partCount}</MetricPill>
                 <MetricPill>
                   {recordingStats.cloudSyncEnabled
-                    ? `云同步开启 · 待传 ${Number(recordingStats.cloudSync?.pendingSegments || 0)} · 失败 ${Number(recordingStats.cloudSync?.failedSegments || 0)}`
+                    ? `云同步开启 · 待传 ${Number(recordingStats.cloudSync?.pendingParts || 0)} · 失败 ${Number(recordingStats.cloudSync?.failedParts || 0)}`
                     : '云同步关闭'}
                 </MetricPill>
                 <MetricPill $warning={recordingStats.lowDiskSpace}>

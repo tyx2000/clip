@@ -1,8 +1,13 @@
 import { existsSync } from 'fs'
-import { copyFile, mkdir, rm, stat, unlink, writeFile } from 'fs/promises'
+import { copyFile, mkdir, rename, rm, stat, unlink, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
-import { createRecordingFileName, getRecordingsDirectoryPath } from './recordingPaths'
+import {
+  createRecordingCaptureTempFileName,
+  createRecordingFileName,
+  getRecordingsDirectoryPath
+} from './recordingPaths'
 
+/** Builds recovery helpers for merge, cleanup, and startup restoration. */
 export function createRecordingRecoveryRuntime({
   persistRecordingSessionManifest,
   buildCloudSyncMetadata,
@@ -25,6 +30,9 @@ export function createRecordingRecoveryRuntime({
   createRuntimeSession,
   scheduleCloudSyncProcessing
 }) {
+  /** Removes one session's temp directory after local/cloud completion.
+   * @param {object} runtimeSession Runtime session whose artifacts should be removed.
+   */
   async function cleanupRecordingSessionArtifacts(runtimeSession) {
     if (!runtimeSession?.dir) {
       return
@@ -35,6 +43,13 @@ export function createRecordingRecoveryRuntime({
         runtimeSession.writeStream.end(() => resolveCallback())
       }).catch(() => {})
       runtimeSession.writeStream = null
+    }
+
+    if (runtimeSession.partWriteStream) {
+      await new Promise((resolveCallback) => {
+        runtimeSession.partWriteStream.end(() => resolveCallback())
+      }).catch(() => {})
+      runtimeSession.partWriteStream = null
     }
 
     await rm(runtimeSession.dir, {
@@ -58,7 +73,55 @@ export function createRecordingRecoveryRuntime({
     deleteCloudSessionFromDatabase(runtimeSession.id)
   }
 
+  /** Produces the final local output for one session.
+   * Cloud-sync sessions rename the continuous capture file.
+   * Local-only sessions merge ready media segments into one output file.
+   *
+   * @param {object} runtimeSession Runtime session to finalize locally.
+   */
   async function mergeRecordingSession(runtimeSession) {
+    if (runtimeSession.manifest.cloudSyncEnabled) {
+      const captureTempPath =
+        runtimeSession.captureTempPath ||
+        join(
+          runtimeSession.dir,
+          createRecordingCaptureTempFileName(runtimeSession.manifest.extension)
+        )
+
+      if (!existsSync(captureTempPath)) {
+        throw new Error('Continuous recording file is missing.')
+      }
+
+      const outputFilePath = join(
+        getRecordingsDirectoryPath(),
+        createRecordingFileName(runtimeSession.manifest.extension)
+      )
+      await mkdir(dirname(outputFilePath), { recursive: true })
+      await rename(captureTempPath, outputFilePath)
+      runtimeSession.captureTempPath = ''
+
+      const outputStat = await stat(outputFilePath)
+      const durationSec = await probeVideoDurationSec(outputFilePath)
+      runtimeSession.manifest.output = {
+        path: outputFilePath,
+        status: 'ready',
+        bytes: Number(outputStat.size || 0),
+        createdAt: Number(outputStat.birthtimeMs || outputStat.mtimeMs || Date.now()),
+        durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null
+      }
+      await persistRecordingSessionManifest(runtimeSession)
+      await writeRecordingMetadata(outputFilePath, {
+        durationSec: runtimeSession.manifest.output.durationSec,
+        cloudSync: buildCloudSyncMetadata(runtimeSession)
+      })
+
+      const item = await buildRecordingItem(outputFilePath, outputStat)
+      return {
+        item,
+        outputPath: outputFilePath
+      }
+    }
+
     const readySegments = runtimeSession.manifest.segments.filter(
       (segment) => segment.status === 'ready'
     )
@@ -133,6 +196,9 @@ export function createRecordingRecoveryRuntime({
     }
   }
 
+  /** Normalizes recovered rows so interrupted writes become deterministic runtime state.
+   * @param {object} runtimeSession Session rebuilt from SQLite.
+   */
   async function normalizeRecoveredRecordingSession(runtimeSession) {
     let manifestChanged = false
     const now = Date.now()
@@ -194,8 +260,8 @@ export function createRecordingRecoveryRuntime({
     }
 
     if (runtimeSession.manifest.cloudSyncEnabled) {
-      runtimeSession.manifest.cloudSync.totalSegments = runtimeSession.manifest.segments.length
-      runtimeSession.manifest.cloudSync.uploadedSegments = runtimeSession.manifest.segments.filter(
+      runtimeSession.manifest.cloudSync.totalParts = runtimeSession.manifest.segments.length
+      runtimeSession.manifest.cloudSync.uploadedParts = runtimeSession.manifest.segments.filter(
         (segment) => segment.uploadStatus === 'uploaded'
       ).length
       manifestChanged = true
@@ -206,6 +272,9 @@ export function createRecordingRecoveryRuntime({
     }
   }
 
+  /** Decides whether a recovered session still needs local recovery work.
+   * @param {object} runtimeSession Session rebuilt from SQLite.
+   */
   function shouldRecoverRecordingSession(runtimeSession) {
     const outputPath = runtimeSession.manifest.output?.path || ''
     const outputReady =
@@ -214,9 +283,22 @@ export function createRecordingRecoveryRuntime({
       return false
     }
 
+    if (runtimeSession.manifest.cloudSyncEnabled) {
+      const captureTempPath =
+        runtimeSession.captureTempPath ||
+        join(
+          runtimeSession.dir,
+          createRecordingCaptureTempFileName(runtimeSession.manifest.extension)
+        )
+      if (existsSync(captureTempPath)) {
+        return true
+      }
+    }
+
     return runtimeSession.manifest.segments.some((segment) => segment.status === 'ready')
   }
 
+  /** Restores unfinished local sessions on app startup. */
   async function recoverPendingRecordingSessions() {
     const summary = {
       scanned: 0,
@@ -297,6 +379,7 @@ export function createRecordingRecoveryRuntime({
     return summary
   }
 
+  /** Requeues unfinished cloud-sync sessions on app startup. */
   async function resumeAllCloudSyncSessions() {
     const sessionRows = listCloudSyncSessionRowsFromDatabase()
     let resumed = 0

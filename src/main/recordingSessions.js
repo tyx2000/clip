@@ -10,6 +10,7 @@ import { createRecordingRecoveryRuntime } from './recordingRecovery'
 import { createRecordingSegmentsRuntime } from './recordingSegments'
 import { createRecordingSessionStateRuntime } from './recordingSessionState'
 
+/** Builds the session lifecycle runtime used by recording IPC handlers. */
 export function createRecordingSessionsRuntime({
   normalizeSegmentDurationMs,
   normalizeCloudSyncEnabled,
@@ -94,6 +95,7 @@ export function createRecordingSessionsRuntime({
     rotateRecordingSessionSegment: rotateRecordingSessionSegmentImpl
   } = segmentsRuntime
 
+  /** Returns the active in-memory session for one session id. */
   function getActiveRecordingSession(sessionId) {
     const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
     if (!normalizedSessionId) {
@@ -102,11 +104,16 @@ export function createRecordingSessionsRuntime({
     return activeRecordingSessions.get(normalizedSessionId) || null
   }
 
+  /** Serializes disk mutations per session through one promise queue.
+   * @param {object} runtimeSession Active runtime session.
+   * @param {() => Promise<any>} task Async task to enqueue.
+   */
   async function enqueueRecordingSessionTask(runtimeSession, task) {
     runtimeSession.writeQueue = runtimeSession.writeQueue.then(task, task)
     return runtimeSession.writeQueue
   }
 
+  /** Creates a new recording session from the renderer start payload. */
   async function createRecordingSession(payload = {}) {
     const sessionIdInput = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : ''
     const sessionId = sessionIdInput || createRecordingSessionId()
@@ -161,6 +168,7 @@ export function createRecordingSessionsRuntime({
     }
   }
 
+  /** Appends one renderer chunk into the session write pipeline. */
   async function appendRecordingSessionChunk(payload = {}) {
     const runtimeSession = getActiveRecordingSession(payload?.sessionId)
     if (!runtimeSession) {
@@ -177,6 +185,7 @@ export function createRecordingSessionsRuntime({
     })
   }
 
+  /** Explicitly rotates the current segment or upload part. */
   async function rotateRecordingSessionSegment(payload = {}) {
     const runtimeSession = getActiveRecordingSession(payload?.sessionId)
     if (!runtimeSession) {
@@ -193,6 +202,7 @@ export function createRecordingSessionsRuntime({
     })
   }
 
+  /** Stops recording, finalizes local output, and schedules cloud finalize if needed. */
   async function stopRecordingSession(payload = {}) {
     const runtimeSession = getActiveRecordingSession(payload?.sessionId)
     if (!runtimeSession) {
@@ -210,6 +220,20 @@ export function createRecordingSessionsRuntime({
       await finalizeCurrentRecordingSessionSegment(runtimeSession)
       runtimeSession.manifest.status = 'stopped'
       runtimeSession.manifest.stoppedAt = Date.now()
+
+      if (runtimeSession.manifest.cloudSyncEnabled && runtimeSession.writeStream) {
+        await new Promise((resolveCallback, rejectCallback) => {
+          runtimeSession.writeStream.end((error) => {
+            if (error) {
+              rejectCallback(error)
+              return
+            }
+            resolveCallback()
+          })
+        })
+        runtimeSession.writeStream = null
+      }
+
       await persistRecordingSessionManifest(runtimeSession)
       activeRecordingSessions.delete(runtimeSession.id)
 
@@ -243,6 +267,7 @@ export function createRecordingSessionsRuntime({
     })
   }
 
+  /** Cancels the current recording and discards unfinished artifacts. */
   async function cancelRecordingSession(payload = {}) {
     const runtimeSession = getActiveRecordingSession(payload?.sessionId)
     if (!runtimeSession) {
@@ -253,12 +278,19 @@ export function createRecordingSessionsRuntime({
       clearCloudSyncWorker(runtimeSession.id)
       activeRecordingSessions.delete(runtimeSession.id)
 
+      if (runtimeSession.partWriteStream) {
+        await new Promise((resolveCallback) => {
+          runtimeSession.partWriteStream.end(() => resolveCallback())
+        }).catch(() => {})
+      }
+
       if (runtimeSession.writeStream) {
         await new Promise((resolveCallback) => {
           runtimeSession.writeStream.end(() => resolveCallback())
         }).catch(() => {})
       }
 
+      runtimeSession.partWriteStream = null
       runtimeSession.writeStream = null
       runtimeSession.currentSegment = null
       runtimeSession.manifest.status = 'cancelled'

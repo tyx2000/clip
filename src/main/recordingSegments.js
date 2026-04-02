@@ -2,21 +2,54 @@ import { createWriteStream } from 'fs'
 import { rename } from 'fs/promises'
 import { once } from 'node:events'
 import { join } from 'path'
-import { createRecordingSegmentFileName } from './recordingPaths'
+import {
+  createCloudSyncPartFileName,
+  createRecordingCaptureTempFileName,
+  createRecordingSegmentFileName,
+  DEFAULT_CLOUD_SYNC_PART_SIZE_BYTES
+} from './recordingPaths'
 
+/** Builds the low-level write runtime that appends chunks and seals disk-backed parts. */
 export function createRecordingSegmentsRuntime({
   persistRecordingSessionManifest,
   scheduleCloudSyncProcessing,
   parseChunkPayloadToBuffer
 }) {
+  /** Opens the next writable target for the session.
+   * Local sessions open one media segment file.
+   * Cloud-sync sessions open the continuous local capture file plus one upload part file.
+   *
+   * @param {object} runtimeSession Active runtime session.
+   * @param {number} index One-based segment or part index.
+   */
   async function openRecordingSessionSegment(runtimeSession, index) {
-    const fileName = createRecordingSegmentFileName(index, runtimeSession.manifest.extension)
+    const fileName = runtimeSession.manifest.cloudSyncEnabled
+      ? createCloudSyncPartFileName(index)
+      : createRecordingSegmentFileName(index, runtimeSession.manifest.extension)
     const partFileName = `${fileName}.part`
     const partPath = join(runtimeSession.dir, partFileName)
     const finalPath = join(runtimeSession.dir, fileName)
     const startedAt = Date.now()
 
-    runtimeSession.writeStream = createWriteStream(partPath, { flags: 'w' })
+    if (runtimeSession.manifest.cloudSyncEnabled) {
+      if (!runtimeSession.captureTempPath) {
+        runtimeSession.captureTempPath = join(
+          runtimeSession.dir,
+          createRecordingCaptureTempFileName(runtimeSession.manifest.extension)
+        )
+      }
+
+      if (!runtimeSession.writeStream) {
+        runtimeSession.writeStream = createWriteStream(runtimeSession.captureTempPath, {
+          flags: 'a'
+        })
+      }
+
+      runtimeSession.partWriteStream = createWriteStream(partPath, { flags: 'w' })
+    } else {
+      runtimeSession.writeStream = createWriteStream(partPath, { flags: 'w' })
+    }
+
     runtimeSession.currentSegment = {
       index,
       fileName,
@@ -45,9 +78,14 @@ export function createRecordingSegmentsRuntime({
     await persistRecordingSessionManifest(runtimeSession)
   }
 
+  /** Finalizes the currently open segment or upload part.
+   * @param {object} runtimeSession Active runtime session.
+   */
   async function finalizeCurrentRecordingSessionSegment(runtimeSession) {
     const currentSegment = runtimeSession.currentSegment
-    const currentWriteStream = runtimeSession.writeStream
+    const currentWriteStream = runtimeSession.manifest.cloudSyncEnabled
+      ? runtimeSession.partWriteStream
+      : runtimeSession.writeStream
 
     if (!currentSegment || !currentWriteStream) {
       return
@@ -75,9 +113,13 @@ export function createRecordingSegmentsRuntime({
     }
 
     runtimeSession.currentSegment = null
-    runtimeSession.writeStream = null
+    if (runtimeSession.manifest.cloudSyncEnabled) {
+      runtimeSession.partWriteStream = null
+    } else {
+      runtimeSession.writeStream = null
+    }
     if (runtimeSession.manifest.cloudSyncEnabled && segmentItem) {
-      runtimeSession.manifest.cloudSync.totalSegments = runtimeSession.manifest.segments.length
+      runtimeSession.manifest.cloudSync.totalParts = runtimeSession.manifest.segments.length
     }
     await persistRecordingSessionManifest(runtimeSession)
 
@@ -86,6 +128,13 @@ export function createRecordingSegmentsRuntime({
     }
   }
 
+  /** Appends one renderer chunk into all required write targets.
+   * For cloud sync, the same bytes are written to both the continuous local capture file
+   * and the current upload part file.
+   *
+   * @param {object} runtimeSession Active runtime session.
+   * @param {object} payload Chunk payload received from IPC.
+   */
   async function appendRecordingSessionChunk(runtimeSession, payload = {}) {
     if (!runtimeSession) {
       throw new Error('Recording session not found.')
@@ -106,9 +155,19 @@ export function createRecordingSegmentsRuntime({
       throw new Error('Recording segment is not available.')
     }
 
-    const canContinue = stream.write(chunk)
-    if (!canContinue) {
-      await once(stream, 'drain')
+    const writeStreams = runtimeSession.manifest.cloudSyncEnabled
+      ? [runtimeSession.writeStream, runtimeSession.partWriteStream]
+      : [runtimeSession.writeStream]
+
+    for (const targetStream of writeStreams) {
+      if (!targetStream) {
+        throw new Error('Recording segment is not available.')
+      }
+
+      const canContinue = targetStream.write(chunk)
+      if (!canContinue) {
+        await once(targetStream, 'drain')
+      }
     }
 
     currentSegment.bytes += chunk.length
@@ -121,6 +180,15 @@ export function createRecordingSegmentsRuntime({
       segmentItem.bytes = currentSegment.bytes
     }
 
+    if (
+      runtimeSession.manifest.cloudSyncEnabled &&
+      currentSegment.bytes >= DEFAULT_CLOUD_SYNC_PART_SIZE_BYTES
+    ) {
+      await finalizeCurrentRecordingSessionSegment(runtimeSession)
+      const nextIndex = runtimeSession.manifest.segments.length + 1
+      await openRecordingSessionSegment(runtimeSession, nextIndex)
+    }
+
     await persistRecordingSessionManifest(runtimeSession)
 
     return {
@@ -129,6 +197,9 @@ export function createRecordingSegmentsRuntime({
     }
   }
 
+  /** Explicitly rotates to the next segment/part.
+   * @param {object} runtimeSession Active runtime session.
+   */
   async function rotateRecordingSessionSegment(runtimeSession) {
     if (!runtimeSession) {
       throw new Error('Recording session not found.')

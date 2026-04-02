@@ -1,19 +1,17 @@
 const http = require('node:http')
 const crypto = require('node:crypto')
-const { spawn } = require('node:child_process')
 const { existsSync, createReadStream } = require('node:fs')
 const {
+  appendFile,
   copyFile,
   mkdir,
   readFile,
   readdir,
   rename,
   stat,
-  unlink,
   writeFile
 } = require('node:fs/promises')
 const path = require('node:path')
-const ffmpegPath = require('ffmpeg-static')
 
 const PORT = Number(process.env.PORT || 8787)
 const HOST = process.env.HOST || '127.0.0.1'
@@ -23,6 +21,7 @@ const SESSION_MANIFEST = 'manifest.json'
 
 const mergeQueue = new Map()
 
+/** Writes a JSON HTTP response with common cache-control headers. */
 function json(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2)
   res.writeHead(statusCode, {
@@ -33,14 +32,17 @@ function json(res, statusCode, payload) {
   res.end(body)
 }
 
+/** Sends a standard 404 response for unknown resources. */
 function notFound(res) {
   json(res, 404, { ok: false, message: 'Not found.' })
 }
 
+/** Sends a standard 400 response for invalid client input. */
 function badRequest(res, message) {
   json(res, 400, { ok: false, message })
 }
 
+/** Sends a standard 500 response for unexpected server failures. */
 function serverError(res, error) {
   json(res, 500, {
     ok: false,
@@ -48,6 +50,7 @@ function serverError(res, error) {
   })
 }
 
+/** Reads and parses a JSON request body. */
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
@@ -64,6 +67,7 @@ function parseJsonBody(req) {
   })
 }
 
+/** Reads a binary request body into one Buffer for part upload handling. */
 function parseBinaryBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
@@ -73,10 +77,12 @@ function parseBinaryBody(req) {
   })
 }
 
+/** Computes the SHA-256 checksum for an in-memory payload. */
 function sha256Buffer(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex')
 }
 
+/** Computes the SHA-256 checksum for one on-disk file. */
 async function sha256File(filePath) {
   return await new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256')
@@ -87,26 +93,32 @@ async function sha256File(filePath) {
   })
 }
 
+/** Ensures the server data root exists before requests are handled. */
 async function ensureDirectories() {
   await mkdir(SESSIONS_DIR, { recursive: true })
 }
 
+/** Returns the absolute working directory for one remote session. */
 function getSessionDir(sessionId) {
   return path.join(SESSIONS_DIR, sessionId)
 }
 
+/** Returns the manifest path for one remote session. */
 function getManifestPath(sessionId) {
   return path.join(getSessionDir(sessionId), SESSION_MANIFEST)
 }
 
+/** Returns the directory that stores uploaded part files. */
 function getSegmentsDir(sessionId) {
   return path.join(getSessionDir(sessionId), 'segments')
 }
 
+/** Returns the directory that stores the merged remote output. */
 function getMergedDir(sessionId) {
   return path.join(getSessionDir(sessionId), 'merged')
 }
 
+/** Creates the initial server-side session manifest. */
 function createSessionState(payload) {
   return {
     version: 1,
@@ -116,18 +128,24 @@ function createSessionState(payload) {
     segmentDurationMs: Number(payload.segmentDurationMs || 5000),
     startedAt: Number(payload.startedAt || Date.now()),
     stoppedAt: null,
-    expectedSegmentCount: null,
+    expectedPartCount: null,
     totalBytes: 0,
     uploadStatus: 'receiving',
     mergeStatus: 'pending',
     remoteVideoPath: '',
     remoteVideoUrl: '',
     lastError: '',
-    uploadedSegments: 0,
-    segments: []
+    uploadedParts: 0,
+    parts: []
   }
 }
 
+/** Returns the normalized parts array from a manifest object. */
+function getManifestParts(manifest) {
+  return Array.isArray(manifest.parts) ? manifest.parts : []
+}
+
+/** Atomically writes the server manifest to disk. */
 async function writeManifest(sessionId, manifest) {
   const manifestPath = getManifestPath(sessionId)
   const tempPath = `${manifestPath}.tmp`
@@ -135,66 +153,44 @@ async function writeManifest(sessionId, manifest) {
   await rename(tempPath, manifestPath)
 }
 
+/** Reads one server manifest from disk. */
 async function readManifest(sessionId) {
   const manifestPath = getManifestPath(sessionId)
   const content = await readFile(manifestPath, 'utf8')
   return JSON.parse(content)
 }
 
+/** Produces the public session status payload returned to clients. */
 function summarizeSession(manifest) {
+  const parts = getManifestParts(manifest)
+  const totalParts = Number(manifest.expectedPartCount || parts.length || 0)
+
   return {
     ok: true,
     sessionId: manifest.sessionId,
     uploadStatus: manifest.uploadStatus,
     mergeStatus: manifest.mergeStatus,
-    uploadedSegments: manifest.uploadedSegments,
-    totalSegments: Number(manifest.expectedSegmentCount || manifest.segments.length || 0),
+    uploadedParts: Number(manifest.uploadedParts || 0),
+    totalParts,
     remoteVideoUrl: manifest.remoteVideoUrl || '',
     remoteVideoPath: manifest.remoteVideoPath || '',
     lastError: manifest.lastError || ''
   }
 }
 
-async function runFfmpeg(args) {
-  if (!ffmpegPath) {
-    throw new Error('ffmpeg is not available on the server.')
-  }
-
-  await new Promise((resolve, reject) => {
-    const child = spawn(ffmpegPath, args, {
-      stdio: ['ignore', 'ignore', 'pipe']
-    })
-
-    let stderr = ''
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString()
-    })
-
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve()
-        return
-      }
-
-      const tail = stderr.trim().split('\n').slice(-8).join('\n')
-      reject(new Error(tail || `ffmpeg exited with code ${code}`))
-    })
-  })
-}
-
+/** Merges all uploaded parts by byte order once the session is complete. */
 async function mergeUploadedSession(sessionId) {
   const manifest = await readManifest(sessionId)
-  const readySegments = [...manifest.segments]
-    .filter((segment) => segment.uploadStatus === 'uploaded')
+  const readyParts = [...getManifestParts(manifest)]
+    .filter((part) => part.uploadStatus === 'uploaded')
     .sort((a, b) => a.index - b.index)
 
   if (!manifest.stoppedAt) {
     return
   }
 
-  const expectedCount = Number(manifest.expectedSegmentCount || 0)
-  if (!expectedCount || readySegments.length !== expectedCount) {
+  const expectedCount = Number(manifest.expectedPartCount || 0)
+  if (!expectedCount || readyParts.length !== expectedCount) {
     return
   }
 
@@ -208,41 +204,13 @@ async function mergeUploadedSession(sessionId) {
     await mkdir(mergedDir, { recursive: true })
     const outputFilePath = path.join(mergedDir, `merged.${manifest.extension}`)
 
-    if (readySegments.length === 1) {
-      await copyFile(readySegments[0].serverPath, outputFilePath)
+    if (readyParts.length === 1) {
+      await copyFile(readyParts[0].serverPath, outputFilePath)
     } else {
-      const concatListPath = path.join(getSessionDir(sessionId), 'concat-inputs.txt')
-      const concatContent = readySegments
-        .map((segment) => `file '${segment.serverPath.replaceAll("'", "'\\''")}'`)
-        .join('\n')
-      await writeFile(concatListPath, concatContent, 'utf8')
-
-      try {
-        await runFfmpeg([
-          '-y',
-          '-f',
-          'concat',
-          '-safe',
-          '0',
-          '-i',
-          concatListPath,
-          '-an',
-          '-c:v',
-          'libvpx-vp9',
-          '-pix_fmt',
-          'yuv420p',
-          '-row-mt',
-          '1',
-          '-deadline',
-          'realtime',
-          '-cpu-used',
-          '4',
-          outputFilePath
-        ])
-      } finally {
-        if (existsSync(concatListPath)) {
-          await unlink(concatListPath).catch(() => {})
-        }
+      await writeFile(outputFilePath, Buffer.alloc(0))
+      for (const part of readyParts) {
+        const body = await readFile(part.serverPath)
+        await appendFile(outputFilePath, body)
       }
     }
 
@@ -259,6 +227,7 @@ async function mergeUploadedSession(sessionId) {
   }
 }
 
+/** Serializes merge work per session to avoid duplicate merge races. */
 function scheduleMerge(sessionId) {
   const current = mergeQueue.get(sessionId) || Promise.resolve()
   const next = current
@@ -276,6 +245,7 @@ function scheduleMerge(sessionId) {
   return next
 }
 
+/** Creates a new remote cloud-sync session. */
 async function handleCreateSession(req, res) {
   const payload = await parseJsonBody(req)
   const sessionId = String(payload.sessionId || '').trim()
@@ -310,7 +280,8 @@ async function handleCreateSession(req, res) {
   })
 }
 
-async function handleUploadSegment(req, res, sessionId, segmentIndex) {
+/** Stores one uploaded part, verifies integrity, and schedules merge when possible. */
+async function handleUploadPart(req, res, sessionId, partIndex) {
   if (!existsSync(getManifestPath(sessionId))) {
     notFound(res)
     return
@@ -319,7 +290,7 @@ async function handleUploadSegment(req, res, sessionId, segmentIndex) {
   const manifest = await readManifest(sessionId)
   const body = await parseBinaryBody(req)
   if (!body.length) {
-    badRequest(res, 'Segment body is empty.')
+    badRequest(res, 'Part body is empty.')
     return
   }
 
@@ -338,12 +309,12 @@ async function handleUploadSegment(req, res, sessionId, segmentIndex) {
     return
   }
 
-  const existing = manifest.segments.find((segment) => segment.index === segmentIndex)
+  const existing = getManifestParts(manifest).find((part) => part.index === partIndex)
   if (existing && existing.checksum === checksum && existing.uploadStatus === 'uploaded') {
     json(res, 200, {
       ok: true,
       sessionId,
-      segmentIndex,
+      partIndex,
       etag: existing.etag || checksum,
       alreadyExisted: true
     })
@@ -353,14 +324,14 @@ async function handleUploadSegment(req, res, sessionId, segmentIndex) {
   if (existing && existing.checksum && existing.checksum !== checksum) {
     json(res, 409, {
       ok: false,
-      message: 'Conflicting segment checksum for the same segment index.'
+      message: 'Conflicting part checksum for the same part index.'
     })
     return
   }
 
   await mkdir(getSegmentsDir(sessionId), { recursive: true })
   const ext = manifest.extension || 'webm'
-  const fileName = `segment-${String(segmentIndex).padStart(4, '0')}.${ext}`
+  const fileName = `part-${String(partIndex).padStart(4, '0')}.${ext}`
   const filePath = path.join(getSegmentsDir(sessionId), fileName)
   const tempPath = `${filePath}.tmp`
   await writeFile(tempPath, body)
@@ -373,8 +344,8 @@ async function handleUploadSegment(req, res, sessionId, segmentIndex) {
   }
 
   const fileStat = await stat(filePath)
-  const nextSegment = {
-    index: segmentIndex,
+  const nextPart = {
+    index: partIndex,
     fileName,
     serverPath: filePath,
     bytes: Number(fileStat.size || body.length),
@@ -385,17 +356,13 @@ async function handleUploadSegment(req, res, sessionId, segmentIndex) {
     uploadedAt: Date.now()
   }
 
-  manifest.segments = manifest.segments
-    .filter((segment) => segment.index !== segmentIndex)
-    .concat(nextSegment)
+  const nextParts = getManifestParts(manifest)
+    .filter((part) => part.index !== partIndex)
+    .concat(nextPart)
     .sort((a, b) => a.index - b.index)
-  manifest.uploadedSegments = manifest.segments.filter(
-    (segment) => segment.uploadStatus === 'uploaded'
-  ).length
-  manifest.totalBytes = manifest.segments.reduce(
-    (sum, segment) => sum + Number(segment.bytes || 0),
-    0
-  )
+  manifest.parts = nextParts
+  manifest.uploadedParts = nextParts.filter((part) => part.uploadStatus === 'uploaded').length
+  manifest.totalBytes = nextParts.reduce((sum, part) => sum + Number(part.bytes || 0), 0)
   manifest.uploadStatus = manifest.stoppedAt ? 'uploading' : 'receiving'
   manifest.lastError = ''
   await writeManifest(sessionId, manifest)
@@ -407,7 +374,7 @@ async function handleUploadSegment(req, res, sessionId, segmentIndex) {
   json(res, 200, {
     ok: true,
     sessionId,
-    segmentIndex,
+    partIndex,
     etag: checksum,
     alreadyExisted: false
   })
@@ -422,10 +389,11 @@ async function handleCompleteSession(req, res, sessionId) {
   const payload = await parseJsonBody(req)
   const manifest = await readManifest(sessionId)
   manifest.stoppedAt = Number(payload.stoppedAt || Date.now())
-  manifest.expectedSegmentCount = Number(payload.segmentCount || manifest.segments.length || 0)
+  const partCount = Number(payload.partCount || getManifestParts(manifest).length || 0)
+  manifest.expectedPartCount = partCount
   manifest.totalBytes = Number(payload.totalBytes || manifest.totalBytes || 0)
   manifest.uploadStatus =
-    manifest.uploadedSegments >= manifest.expectedSegmentCount ? 'uploaded' : 'uploading'
+    Number(manifest.uploadedParts || 0) >= partCount ? 'uploaded' : 'uploading'
   manifest.lastError = ''
   await writeManifest(sessionId, manifest)
 
@@ -493,9 +461,9 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
-    const segmentMatch = pathname.match(/^\/api\/cloud-sync\/sessions\/([^/]+)\/segments\/(\d+)$/)
-    if (req.method === 'PUT' && segmentMatch) {
-      await handleUploadSegment(req, res, segmentMatch[1], Number(segmentMatch[2]))
+    const partMatch = pathname.match(/^\/api\/cloud-sync\/sessions\/([^/]+)\/parts\/(\d+)$/)
+    if (req.method === 'PUT' && partMatch) {
+      await handleUploadPart(req, res, partMatch[1], Number(partMatch[2]))
       return
     }
 

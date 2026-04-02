@@ -201,12 +201,12 @@ function getCloudSyncLabel(cloudSync) {
     return ''
   }
 
-  if (Number(cloudSync.failedSegments || 0) > 0) {
-    return `???? ${Number(cloudSync.failedSegments || 0)} ?`
+  if (Number(cloudSync.failedParts || 0) > 0) {
+    return `???? ${Number(cloudSync.failedParts || 0)} ?`
   }
 
-  if (Number(cloudSync.pendingSegments || 0) > 0) {
-    return `??? ${Number(cloudSync.pendingSegments || 0)} ?`
+  if (Number(cloudSync.pendingParts || 0) > 0) {
+    return `??? ${Number(cloudSync.pendingParts || 0)} ?`
   }
 
   if (cloudSync.mergeStatus === 'merged') {
@@ -223,8 +223,8 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
   const cloudSync = item.cloudSync || null
   const canRetryCloudSync =
     cloudSync?.enabled &&
-    (Number(cloudSync.pendingSegments || 0) > 0 ||
-      Number(cloudSync.failedSegments || 0) > 0 ||
+    (Number(cloudSync.pendingParts || 0) > 0 ||
+      Number(cloudSync.failedParts || 0) > 0 ||
       cloudSync.mergeStatus === 'merge_failed')
   const cloudSyncLabel = getCloudSyncLabel(cloudSync)
 
@@ -271,9 +271,7 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
           {cloudSync?.enabled ? (
             <>
               {' ? '}
-              <SyncMeta $failed={Number(cloudSync.failedSegments || 0) > 0}>
-                {cloudSyncLabel}
-              </SyncMeta>
+              <SyncMeta $failed={Number(cloudSync.failedParts || 0) > 0}>{cloudSyncLabel}</SyncMeta>
             </>
           ) : null}
         </MetaLine>
@@ -297,8 +295,8 @@ RecordingVideoCard.propTypes = {
       enabled: PropTypes.bool,
       sessionId: PropTypes.string,
       mergeStatus: PropTypes.string,
-      failedSegments: PropTypes.number,
-      pendingSegments: PropTypes.number
+      failedParts: PropTypes.number,
+      pendingParts: PropTypes.number
     })
   }).isRequired,
   onOpen: PropTypes.func.isRequired,

@@ -50,14 +50,17 @@ let recordingSessionsRuntime = null
 let recordingCatalog = null
 let recordingHandlersRegistrar = null
 
+/** Thin forwarding helper into the sessions runtime so cloud sync can persist state. */
 function persistRecordingSessionManifest(...args) {
   return recordingSessionsRuntime.persistRecordingSessionManifest(...args)
 }
 
+/** Thin forwarding helper that builds persisted cloud-sync metadata for one output. */
 function buildCloudSyncMetadata(...args) {
   return recordingSessionsRuntime.buildCloudSyncMetadata(...args)
 }
 
+/** Thin forwarding helper that removes one session's temporary artifacts. */
 function cleanupRecordingSessionArtifacts(...args) {
   return recordingSessionsRuntime.cleanupRecordingSessionArtifacts(...args)
 }
@@ -84,6 +87,21 @@ const cloudSyncRuntime = createCloudSyncRuntime({
 })
 const { clearCloudSyncWorker, scheduleCloudSyncProcessing, scheduleCloudSyncFinalize } =
   cloudSyncRuntime
+recordingCatalog = createRecordingCatalog({
+  readRecordingMetadata,
+  writeRecordingMetadata,
+  probeVideoDurationSec,
+  toRecordingMediaUrl,
+  parseDataUrl,
+  deleteRecordingMetadataFromDatabase
+})
+const {
+  isRecordingFilePath,
+  buildRecordingItem,
+  listRecordingItems,
+  saveRecordingFromDataUrl,
+  deleteRecordingFile
+} = recordingCatalog
 recordingSessionsRuntime = createRecordingSessionsRuntime({
   normalizeSegmentDurationMs,
   normalizeCloudSyncEnabled,
@@ -112,14 +130,6 @@ recordingSessionsRuntime = createRecordingSessionsRuntime({
   clearCloudSyncWorker,
   parseChunkPayloadToBuffer
 })
-recordingCatalog = createRecordingCatalog({
-  readRecordingMetadata,
-  writeRecordingMetadata,
-  probeVideoDurationSec,
-  toRecordingMediaUrl,
-  parseDataUrl,
-  deleteRecordingMetadataFromDatabase
-})
 const {
   createRecordingSession,
   getActiveRecordingSession,
@@ -132,13 +142,6 @@ const {
   getRuntimeSessionForCloudSync,
   resumeAllCloudSyncSessions
 } = recordingSessionsRuntime
-const {
-  isRecordingFilePath,
-  buildRecordingItem,
-  listRecordingItems,
-  saveRecordingFromDataUrl,
-  deleteRecordingFile
-} = recordingCatalog
 recordingHandlersRegistrar = createRecordingHandlersRegistrar({
   getActiveRecordingSession,
   getRecordingSessionStatus,
@@ -165,18 +168,22 @@ recordingHandlersRegistrar = createRecordingHandlersRegistrar({
 const { registerRecordingHandlers: registerRecordingHandlersImpl, resolvePreferredDisplaySource } =
   recordingHandlersRegistrar
 
+/** Restores unfinished local/cloud sessions on application startup. */
 export async function recoverPendingRecordingSessions() {
   return await recoverPendingRecordingSessionsImpl()
 }
 
+/** Reads persisted metadata for one finalized recording output path. */
 async function readRecordingMetadata(filePath) {
   return readRecordingMetadataFromDatabase(filePath)
 }
 
+/** Writes persisted metadata for one finalized recording output path. */
 async function writeRecordingMetadata(filePath, metadata) {
   writeRecordingMetadataToDatabase(filePath, metadata)
 }
 
+/** Forces a failed or paused cloud-sync session back into the upload queue. */
 async function retryCloudSyncSession(payload = {}) {
   const runtimeSession = await getRuntimeSessionForCloudSync(payload)
   if (!runtimeSession) {
@@ -197,6 +204,11 @@ async function retryCloudSyncSession(payload = {}) {
     }
   }
 
+  runtimeSession.manifest.cloudSync.uploadedParts = runtimeSession.manifest.segments.filter(
+    (segment) => segment.uploadStatus === 'uploaded'
+  ).length
+  runtimeSession.manifest.cloudSync.totalParts = runtimeSession.manifest.segments.length
+
   await persistRecordingSessionManifest(runtimeSession)
   scheduleCloudSyncProcessing(runtimeSession)
 
@@ -207,15 +219,18 @@ async function retryCloudSyncSession(payload = {}) {
   }
 }
 
+/** Creates the main Electron application window used by the renderer UI. */
 export function createMainWindow({ iconPath } = {}) {
   return createMainWindowImpl({ iconPath, baseDir: __dirname })
 }
 
 export { resolvePreferredDisplaySource }
 
+/** Registers the custom `recording://` protocol used by cards and player windows. */
 export function registerRecordingMediaProtocol() {
   return registerRecordingMediaProtocolImpl({ isRecordingFilePath })
 }
+/** Registers all recording-related IPC handlers on the Electron main process. */
 export function registerRecordingHandlers() {
   return registerRecordingHandlersImpl()
 }

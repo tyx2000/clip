@@ -112,6 +112,8 @@ export function createRuntimeSessionFromCloudSyncDatabaseRecord(
       sessionStatus: sessionRow?.status || 'stopped',
       uploadStatus: sessionRow?.uploadStatus || 'pending',
       mergeStatus: sessionRow?.mergeStatus || 'pending',
+      uploadedParts: segmentRows.filter((segment) => segment.uploadStatus === 'uploaded').length,
+      totalParts: segmentRows.length,
       completedAt: Number(sessionRow?.completedAt || 0) || null,
       lastError: sessionRow?.lastError || '',
       lastAttemptAt: Number(sessionRow?.lastAttemptAt || 0) || null,
