@@ -1,17 +1,46 @@
 import { app, BrowserWindow, desktopCapturer, session } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { createRecordingHandlersRegistrar } from './recordingHandlers'
+import { createRecordingService } from './recordingService'
 import {
-  recoverPendingRecordingSessions,
-  registerRecordingHandlers,
-  registerRecordingMediaProtocol,
-  resolvePreferredDisplaySource,
-  createMainWindow
-} from './recording'
+  createMainWindow,
+  createRecordingPlayerWindow,
+  getScreenCapturePermissionDetails,
+  listCaptureSources,
+  openScreenCaptureSettings,
+  registerRecordingMediaProtocol
+} from './recordingShell'
+
+const recordingService = createRecordingService()
+const { registerRecordingHandlers, resolvePreferredDisplaySource } =
+  createRecordingHandlersRegistrar({
+    getActiveRecordingSession: recordingService.getActiveRecordingSession,
+    getRecordingSessionStatus: recordingService.getRecordingSessionStatus,
+    createRecordingSession: recordingService.createRecordingSession,
+    appendRecordingSessionChunk: recordingService.appendRecordingSessionChunk,
+    rotateRecordingSessionSegment: recordingService.rotateRecordingSessionSegment,
+    stopRecordingSession: recordingService.stopRecordingSession,
+    cancelRecordingSession: recordingService.cancelRecordingSession,
+    listRecordingItems: recordingService.listRecordingItems,
+    saveRecordingFromDataUrl: recordingService.saveRecordingFromDataUrl,
+    retryCloudSyncSession: recordingService.retryCloudSyncSession,
+    resumeAllCloudSyncSessions: recordingService.resumeAllCloudSyncSessions,
+    getScreenCapturePermissionDetails,
+    openScreenCaptureSettings,
+    listCaptureSources,
+    isRecordingFilePath: recordingService.isRecordingFilePath,
+    createRecordingPlayerWindow,
+    deleteRecordingFile: recordingService.deleteRecordingFile,
+    getRuntimeSessionForCloudSync: recordingService.getRuntimeSessionForCloudSync,
+    clearCloudSyncWorker: recordingService.clearCloudSyncWorker,
+    cleanupRecordingSessionArtifacts: recordingService.cleanupRecordingSessionArtifacts,
+    baseDir: __dirname
+  })
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.electron.clip-recorder')
-  registerRecordingMediaProtocol()
+  registerRecordingMediaProtocol({ isRecordingFilePath: recordingService.isRecordingFilePath })
   registerRecordingHandlers()
 
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
@@ -40,16 +69,22 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  const recoverySummary = await recoverPendingRecordingSessions()
+  const recoverySummary = await recordingService.recoverPendingRecordingSessions()
   if (recoverySummary.recovered || recoverySummary.failed) {
     console.info('[recording] recovery summary:', recoverySummary)
   }
 
-  createMainWindow({ iconPath: process.platform === 'linux' ? icon : undefined })
+  createMainWindow({
+    iconPath: process.platform === 'linux' ? icon : undefined,
+    baseDir: __dirname
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow({ iconPath: process.platform === 'linux' ? icon : undefined })
+      createMainWindow({
+        iconPath: process.platform === 'linux' ? icon : undefined,
+        baseDir: __dirname
+      })
     }
   })
 })

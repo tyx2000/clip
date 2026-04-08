@@ -1,70 +1,113 @@
 import { existsSync } from 'fs'
 import { mkdir } from 'fs/promises'
 import { join } from 'path'
+import { createCloudSyncRuntime } from './cloudSyncRuntime'
+import { createRecordingCatalog } from './recordingCatalog'
+import { createRecordingFinalizerRuntime } from './recordingFinalizer'
+import {
+  listSessionArtifactPaths,
+  probeVideoDurationSec,
+  runFfmpeg,
+  sha256File
+} from './mediaUtils'
 import {
   createRecordingSessionId,
   getRecordingSessionsDirectoryPath,
   getVideoExtensionFromMimeType
 } from './recordingPaths'
 import { createRecordingRecoveryRuntime } from './recordingRecovery'
-import { createRecordingSegmentsRuntime } from './recordingSegments'
-import { createRecordingSessionStateRuntime } from './recordingSessionState'
-
-/** Builds the session lifecycle runtime used by recording IPC handlers. */
-export function createRecordingSessionsRuntime({
-  normalizeSegmentDurationMs,
-  normalizeCloudSyncEnabled,
-  getCloudSyncServerUrl,
-  createCloudSyncState,
-  normalizeSegmentCloudSyncState,
+import {
   applyRecordingSessionStateDefaults,
-  syncRecordingSessionToDatabase,
-  writeRecordingMetadataToDatabase,
-  listSessionArtifactPaths,
-  deleteRecordingSessionFromDatabase,
-  deleteCloudSessionFromDatabase,
-  runFfmpeg,
-  probeVideoDurationSec,
-  buildRecordingItem,
-  writeRecordingMetadata,
-  listLocalRecordingSessionRowsFromDatabase,
-  readRecordingSessionRowsFromDatabase,
-  createLocalRuntimeSessionFromDatabase,
-  listCloudSyncSessionRowsFromDatabase,
-  readCloudSyncSessionRowsFromDatabase,
-  createCloudSyncRuntimeSessionFromDatabase,
-  scheduleCloudSyncProcessing,
-  scheduleCloudSyncFinalize,
-  clearCloudSyncWorker,
-  parseChunkPayloadToBuffer
-}) {
+  createCloudSyncState,
+  getCloudSyncRetryDelayMs,
+  getCloudSyncServerUrl,
+  normalizeCloudSyncEnabled,
+  normalizeSegmentCloudSyncState,
+  normalizeSegmentDurationMs,
+  parseChunkPayloadToBuffer,
+  parseDataUrl
+} from './recordingRuntimeUtils'
+import { createRecordingSegmentsRuntime } from './recordingSegments'
+import { createRecordingStorageRuntime } from './recordingStorage'
+
+export function createRecordingService() {
   const activeRecordingSessions = new Map()
-  const stateRuntime = createRecordingSessionStateRuntime({
+  const storageRuntime = createRecordingStorageRuntime({
     getCloudSyncServerUrl,
-    createCloudSyncState,
-    syncRecordingSessionToDatabase,
-    writeRecordingMetadataToDatabase
+    createCloudSyncState
   })
   const {
     createRecordingSessionState,
     persistRecordingSessionState,
     buildCloudSyncMetadata,
     getRecordingSessionStatus,
-    createRuntimeSession
-  } = stateRuntime
+    createRuntimeSession,
+    readRecordingMetadata,
+    writeRecordingMetadata,
+    deleteRecordingMetadataFromDatabase,
+    deleteRecordingSessionFromDatabase,
+    deleteCloudSessionFromDatabase,
+    listCloudSyncSessionRowsFromDatabase,
+    listLocalRecordingSessionRowsFromDatabase,
+    readCloudSyncSessionRowsFromDatabase,
+    readRecordingSessionRowsFromDatabase,
+    createLocalRuntimeSessionFromDatabase,
+    createCloudSyncRuntimeSessionFromDatabase
+  } = storageRuntime
 
-  const recoveryRuntime = createRecordingRecoveryRuntime({
+  let recoveryRuntime = null
+
+  function cleanupRecordingSessionArtifacts(...args) {
+    return recoveryRuntime.cleanupRecordingSessionArtifacts(...args)
+  }
+
+  const cloudSyncRuntime = createCloudSyncRuntime({
+    getCloudSyncRetryDelayMs,
     persistRecordingSessionState,
     buildCloudSyncMetadata,
-    normalizeSegmentCloudSyncState,
-    applyRecordingSessionStateDefaults,
+    writeRecordingMetadata,
+    cleanupRecordingSessionArtifacts,
+    sha256File
+  })
+  const { clearCloudSyncWorker, scheduleCloudSyncProcessing, scheduleCloudSyncFinalize } =
+    cloudSyncRuntime
+
+  const recordingCatalog = createRecordingCatalog({
+    readRecordingMetadata,
+    writeRecordingMetadata,
+    probeVideoDurationSec,
+    toRecordingMediaUrl: (filePath) => `recording://media/${encodeURIComponent(filePath)}`,
+    parseDataUrl,
+    deleteRecordingMetadataFromDatabase
+  })
+  const {
+    isRecordingFilePath,
+    buildRecordingItem,
+    listRecordingItems,
+    saveRecordingFromDataUrl,
+    deleteRecordingFile
+  } = recordingCatalog
+
+  const finalizerRuntime = createRecordingFinalizerRuntime({
+    persistRecordingSessionState,
+    buildCloudSyncMetadata,
     listSessionArtifactPaths,
     deleteRecordingSessionFromDatabase,
     deleteCloudSessionFromDatabase,
     runFfmpeg,
     probeVideoDurationSec,
     buildRecordingItem,
-    writeRecordingMetadata,
+    writeRecordingMetadata
+  })
+  const {
+    cleanupRecordingSessionArtifacts: cleanupRecordingSessionArtifactsImpl,
+    mergeRecordingSession
+  } = finalizerRuntime
+
+  recoveryRuntime = createRecordingRecoveryRuntime({
+    persistRecordingSessionState,
+    normalizeSegmentCloudSyncState,
+    applyRecordingSessionStateDefaults,
     listLocalRecordingSessionRowsFromDatabase,
     readRecordingSessionRowsFromDatabase,
     createLocalRuntimeSessionFromDatabase,
@@ -73,14 +116,13 @@ export function createRecordingSessionsRuntime({
     createCloudSyncRuntimeSessionFromDatabase,
     createCloudSyncState,
     createRuntimeSession,
-    scheduleCloudSyncProcessing
+    scheduleCloudSyncProcessing,
+    cleanupRecordingSessionArtifacts: cleanupRecordingSessionArtifactsImpl,
+    mergeRecordingSession
   })
-  const {
-    cleanupRecordingSessionArtifacts,
-    mergeRecordingSession,
-    recoverPendingRecordingSessions,
-    resumeAllCloudSyncSessions
-  } = recoveryRuntime
+
+  const { recoverPendingRecordingSessions, resumeAllCloudSyncSessions } = recoveryRuntime
+
   const segmentsRuntime = createRecordingSegmentsRuntime({
     persistRecordingSessionState,
     scheduleCloudSyncProcessing,
@@ -93,7 +135,6 @@ export function createRecordingSessionsRuntime({
     rotateRecordingSessionSegment: rotateRecordingSessionSegmentImpl
   } = segmentsRuntime
 
-  /** Returns the active in-memory session for one session id. */
   function getActiveRecordingSession(sessionId) {
     const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
     if (!normalizedSessionId) {
@@ -102,16 +143,11 @@ export function createRecordingSessionsRuntime({
     return activeRecordingSessions.get(normalizedSessionId) || null
   }
 
-  /** Serializes disk mutations per session through one promise queue.
-   * @param {object} runtimeSession Active runtime session.
-   * @param {() => Promise<any>} task Async task to enqueue.
-   */
   async function enqueueRecordingSessionTask(runtimeSession, task) {
     runtimeSession.writeQueue = runtimeSession.writeQueue.then(task, task)
     return runtimeSession.writeQueue
   }
 
-  /** Creates a new recording session from the renderer start payload. */
   async function createRecordingSession(payload = {}) {
     const sessionIdInput = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : ''
     const sessionId = sessionIdInput || createRecordingSessionId()
@@ -166,7 +202,6 @@ export function createRecordingSessionsRuntime({
     }
   }
 
-  /** Appends one renderer chunk into the session write pipeline. */
   async function appendRecordingSessionChunk(payload = {}) {
     const runtimeSession = getActiveRecordingSession(payload?.sessionId)
     if (!runtimeSession) {
@@ -175,7 +210,6 @@ export function createRecordingSessionsRuntime({
 
     return enqueueRecordingSessionTask(runtimeSession, async () => {
       const result = await appendRecordingSessionChunkImpl(runtimeSession, payload)
-
       return {
         ...result,
         ...(await getRecordingSessionStatus(runtimeSession))
@@ -183,7 +217,6 @@ export function createRecordingSessionsRuntime({
     })
   }
 
-  /** Explicitly rotates the current segment or upload part. */
   async function rotateRecordingSessionSegment(payload = {}) {
     const runtimeSession = getActiveRecordingSession(payload?.sessionId)
     if (!runtimeSession) {
@@ -192,7 +225,6 @@ export function createRecordingSessionsRuntime({
 
     return enqueueRecordingSessionTask(runtimeSession, async () => {
       await rotateRecordingSessionSegmentImpl(runtimeSession)
-
       return {
         ok: true,
         ...(await getRecordingSessionStatus(runtimeSession))
@@ -200,7 +232,6 @@ export function createRecordingSessionsRuntime({
     })
   }
 
-  /** Stops recording, finalizes local output, and schedules cloud finalize if needed. */
   async function stopRecordingSession(payload = {}) {
     const runtimeSession = getActiveRecordingSession(payload?.sessionId)
     if (!runtimeSession) {
@@ -238,7 +269,7 @@ export function createRecordingSessionsRuntime({
       try {
         const mergeResult = await mergeRecordingSession(runtimeSession)
         if (!runtimeSession.manifest.cloudSyncEnabled) {
-          await cleanupRecordingSessionArtifacts(runtimeSession)
+          await cleanupRecordingSessionArtifactsImpl(runtimeSession)
         }
         scheduleCloudSyncFinalize(runtimeSession)
         return {
@@ -265,7 +296,6 @@ export function createRecordingSessionsRuntime({
     })
   }
 
-  /** Cancels the current recording and discards unfinished artifacts. */
   async function cancelRecordingSession(payload = {}) {
     const runtimeSession = getActiveRecordingSession(payload?.sessionId)
     if (!runtimeSession) {
@@ -294,7 +324,7 @@ export function createRecordingSessionsRuntime({
       runtimeSession.manifest.status = 'cancelled'
       runtimeSession.manifest.stoppedAt = Date.now()
 
-      await cleanupRecordingSessionArtifacts(runtimeSession)
+      await cleanupRecordingSessionArtifactsImpl(runtimeSession)
 
       return {
         ok: true,
@@ -306,43 +336,76 @@ export function createRecordingSessionsRuntime({
 
   async function getRuntimeSessionForCloudSync(payload = {}) {
     const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : ''
-    if (sessionId) {
-      const activeSession = getActiveRecordingSession(sessionId)
-      if (activeSession) {
-        return activeSession
-      }
-
-      const storedSession = readCloudSyncSessionRowsFromDatabase(sessionId)
-      if (!storedSession) {
-        return null
-      }
-
-      return await createCloudSyncRuntimeSessionFromDatabase(
-        storedSession.sessionRow,
-        storedSession.segmentRows,
-        applyRecordingSessionStateDefaults,
-        createCloudSyncState,
-        createRuntimeSession
-      )
+    if (!sessionId) {
+      return null
     }
 
-    return null
+    const activeSession = getActiveRecordingSession(sessionId)
+    if (activeSession) {
+      return activeSession
+    }
+
+    const storedSession = readCloudSyncSessionRowsFromDatabase(sessionId)
+    if (!storedSession) {
+      return null
+    }
+
+    return await createCloudSyncRuntimeSessionFromDatabase(
+      storedSession.sessionRow,
+      storedSession.segmentRows,
+      applyRecordingSessionStateDefaults
+    )
+  }
+
+  async function retryCloudSyncSession(payload = {}) {
+    const runtimeSession = await getRuntimeSessionForCloudSync(payload)
+    if (!runtimeSession) {
+      throw new Error('Cloud sync session not found.')
+    }
+
+    if (!runtimeSession.manifest.cloudSyncEnabled) {
+      throw new Error('This recording did not enable cloud sync.')
+    }
+
+    runtimeSession.manifest.cloudSync.lastError = ''
+    runtimeSession.manifest.cloudSync.status = 'pending'
+    runtimeSession.manifest.cloudSync.completedAt = null
+    runtimeSession.manifest.cloudSync.remoteVideoUrl = ''
+    runtimeSession.manifest.cloudSync.nextRetryAt = null
+
+    for (const segment of runtimeSession.manifest.segments) {
+      if (segment.status === 'ready' && segment.uploadStatus === 'failed') {
+        segment.uploadStatus = 'pending'
+      }
+    }
+
+    await persistRecordingSessionState(runtimeSession)
+    scheduleCloudSyncProcessing(runtimeSession)
+
+    return {
+      ok: true,
+      sessionId: runtimeSession.id,
+      ...(await getRecordingSessionStatus(runtimeSession))
+    }
   }
 
   return {
-    buildCloudSyncMetadata,
-    cleanupRecordingSessionArtifacts,
-    createRecordingSession,
-    createRuntimeSession,
     getActiveRecordingSession,
     getRecordingSessionStatus,
-    persistRecordingSessionState,
+    createRecordingSession,
     appendRecordingSessionChunk,
     rotateRecordingSessionSegment,
     stopRecordingSession,
     cancelRecordingSession,
+    retryCloudSyncSession,
+    resumeAllCloudSyncSessions,
     recoverPendingRecordingSessions,
     getRuntimeSessionForCloudSync,
-    resumeAllCloudSyncSessions
+    clearCloudSyncWorker,
+    cleanupRecordingSessionArtifacts: cleanupRecordingSessionArtifactsImpl,
+    isRecordingFilePath,
+    listRecordingItems,
+    saveRecordingFromDataUrl,
+    deleteRecordingFile
   }
 }

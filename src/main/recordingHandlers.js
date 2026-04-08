@@ -36,7 +36,7 @@ export function createRecordingHandlersRegistrar({
     )
   }
 
-  function registerRecordingHandlers() {
+  function registerSessionHandlers() {
     ipcMain.handle('screen-recording:session-start', async (_, payload = {}) => {
       try {
         const runtimeSession = await createRecordingSession(payload)
@@ -108,7 +108,9 @@ export function createRecordingHandlersRegistrar({
         }
       })()
     })
+  }
 
+  function registerLibraryHandlers() {
     ipcMain.handle('screen-recording:save', async (_, payload = {}) => {
       return await saveRecordingFromDataUrl(payload)
     })
@@ -176,7 +178,9 @@ export function createRecordingHandlersRegistrar({
         }
       }
     })
+  }
 
+  function registerSystemHandlers() {
     ipcMain.handle('screen-recording:permission-status', () => {
       return {
         ok: true,
@@ -205,7 +209,9 @@ export function createRecordingHandlersRegistrar({
       preferredDisplaySourceId = sourceId
       return { ok: true, sourceId: preferredDisplaySourceId }
     })
+  }
 
+  function registerFileHandlers() {
     ipcMain.handle('screen-recording:open', async (_, payload = {}) => {
       const filePath = typeof payload?.path === 'string' ? payload.path : ''
       if (!isRecordingFilePath(filePath)) {
@@ -260,6 +266,13 @@ export function createRecordingHandlersRegistrar({
         }
       }
     })
+  }
+
+  function registerRecordingHandlers() {
+    registerSessionHandlers()
+    registerLibraryHandlers()
+    registerSystemHandlers()
+    registerFileHandlers()
   }
 
   return {
