@@ -209,11 +209,15 @@ function getCloudSyncLabel(cloudSync) {
     return `??? ${Number(cloudSync.pendingParts || 0)} ?`
   }
 
-  if (cloudSync.mergeStatus === 'merged') {
+  if (cloudSync.status === 'completed') {
     return '?????'
   }
 
-  return '????'
+  if (cloudSync.status === 'merging') {
+    return '????'
+  }
+
+  return '???'
 }
 
 function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync }) {
@@ -225,7 +229,7 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
     cloudSync?.enabled &&
     (Number(cloudSync.pendingParts || 0) > 0 ||
       Number(cloudSync.failedParts || 0) > 0 ||
-      cloudSync.mergeStatus === 'merge_failed')
+      cloudSync.status === 'failed')
   const cloudSyncLabel = getCloudSyncLabel(cloudSync)
 
   return (
@@ -294,7 +298,7 @@ RecordingVideoCard.propTypes = {
     cloudSync: PropTypes.shape({
       enabled: PropTypes.bool,
       sessionId: PropTypes.string,
-      mergeStatus: PropTypes.string,
+      status: PropTypes.string,
       failedParts: PropTypes.number,
       pendingParts: PropTypes.number
     })

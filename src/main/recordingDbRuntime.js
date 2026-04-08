@@ -1,13 +1,64 @@
-import { join, resolve, sep } from 'path'
-import {
-  DEFAULT_SEGMENT_DURATION_MS,
-  getMimeTypeByExtension,
-  getRecordingsDirectoryPath
-} from './recordingPaths'
+import { resolve, sep } from 'path'
+import { DEFAULT_SEGMENT_DURATION_MS, getMimeTypeByExtension } from './recordingPaths'
 
-export function createRuntimeSessionFromRecordingDatabaseRecord(
+function normalizeCloudSyncStateFromSessionRow(
+  sessionRow = {},
+  segmentRows = [],
+  createCloudSyncState
+) {
+  const enabled = Boolean(sessionRow?.cloudSyncEnabled)
+  const serverUrl = sessionRow?.cloudServerUrl || ''
+  const failedParts = segmentRows.filter((segment) => segment.uploadStatus === 'failed').length
+  const pendingParts = segmentRows.filter(
+    (segment) =>
+      segment.status === 'ready' &&
+      segment.uploadStatus !== 'uploaded' &&
+      segment.uploadStatus !== 'disabled'
+  ).length
+
+  let status = sessionRow?.cloudSyncStatus || (enabled ? 'pending' : 'disabled')
+  if (enabled && status === 'completed' && (pendingParts > 0 || failedParts > 0)) {
+    status = failedParts > 0 ? 'failed' : 'syncing'
+  }
+
+  return {
+    ...createCloudSyncState({ enabled, serverUrl }),
+    enabled,
+    serverUrl,
+    status,
+    remoteVideoUrl: sessionRow?.cloudRemoteVideoUrl || '',
+    lastError: sessionRow?.cloudLastError || '',
+    completedAt: Number(sessionRow?.cloudCompletedAt || 0) || null,
+    lastAttemptAt: Number(sessionRow?.cloudLastAttemptAt || 0) || null,
+    nextRetryAt: Number(sessionRow?.cloudNextRetryAt || 0) || null
+  }
+}
+
+function normalizeSegments(segmentRows = []) {
+  return segmentRows.map((segment) => {
+    const filePath = segment.filePath ? resolve(segment.filePath) : ''
+    return {
+      index: Number(segment.index || 0),
+      fileName: filePath ? filePath.split(sep).pop() || '' : '',
+      path: filePath,
+      partialPath: segment.partialPath ? resolve(segment.partialPath) : '',
+      startedAt: Number(segment.startedAt || 0) || null,
+      endedAt: Number(segment.endedAt || 0) || null,
+      bytes: Number(segment.bytes || 0),
+      status: segment.status || 'ready',
+      uploadStatus: segment.uploadStatus || 'disabled',
+      checksum: segment.checksum || '',
+      etag: segment.etag || '',
+      uploadedAt: Number(segment.uploadedAt || 0) || null,
+      retryCount: Number(segment.retryCount || 0)
+    }
+  })
+}
+
+function createSessionStateFromDatabaseRecord(
   sessionRow,
   segmentRows,
+  createCloudSyncState,
   createRuntimeSession
 ) {
   const sessionId = String(sessionRow?.sessionId || '').trim()
@@ -15,14 +66,21 @@ export function createRuntimeSessionFromRecordingDatabaseRecord(
     return null
   }
 
-  const manifest = {
+  const normalizedSegments = normalizeSegments(segmentRows)
+  const extension = sessionRow.extension || 'webm'
+  const sessionState = {
     version: 2,
     sessionId,
     sessionDir: sessionRow.sessionDir,
-    extension: sessionRow.extension || 'webm',
-    mimeType: sessionRow.mimeType || getMimeTypeByExtension(sessionRow.extension),
+    extension,
+    mimeType: sessionRow.mimeType || getMimeTypeByExtension(extension),
     segmentDurationMs: Number(sessionRow.segmentDurationMs || DEFAULT_SEGMENT_DURATION_MS),
     cloudSyncEnabled: Boolean(sessionRow.cloudSyncEnabled),
+    cloudSync: normalizeCloudSyncStateFromSessionRow(
+      sessionRow,
+      normalizedSegments,
+      createCloudSyncState
+    ),
     status: sessionRow.status || 'interrupted',
     startedAt: Number(sessionRow.startedAt || 0) || Date.now(),
     stoppedAt: Number(sessionRow.stoppedAt || 0) || null,
@@ -37,121 +95,37 @@ export function createRuntimeSessionFromRecordingDatabaseRecord(
           durationSec: Number(sessionRow.outputDurationSec || 0) || null
         }
       : null,
-    segments: segmentRows.map((segment) => ({
-      index: Number(segment.index || 0),
-      fileName: segment.filePath ? resolve(segment.filePath).split(sep).pop() || '' : '',
-      path: segment.filePath ? resolve(segment.filePath) : '',
-      partialPath: segment.partialPath ? resolve(segment.partialPath) : '',
-      startedAt: Number(segment.startedAt || 0) || null,
-      endedAt: Number(segment.endedAt || 0) || null,
-      bytes: Number(segment.bytes || 0),
-      status: segment.status || 'ready',
-      uploadStatus: segment.uploadStatus || 'disabled',
-      checksum: segment.checksum || '',
-      etag: segment.etag || '',
-      uploadedAt: Number(segment.uploadedAt || 0) || null,
-      retryCount: Number(segment.retryCount || 0)
-    }))
+    segments: normalizedSegments
   }
 
-  return createRuntimeSession(manifest)
+  return createRuntimeSession(sessionState)
+}
+
+export function createRuntimeSessionFromRecordingDatabaseRecord(
+  sessionRow,
+  segmentRows,
+  createRuntimeSession,
+  createCloudSyncState = () => ({ enabled: false, status: 'disabled' })
+) {
+  return createSessionStateFromDatabaseRecord(
+    sessionRow,
+    segmentRows,
+    createCloudSyncState,
+    createRuntimeSession
+  )
 }
 
 export function createRuntimeSessionFromCloudSyncDatabaseRecord(
   sessionRow,
   segmentRows,
-  applyRecordingSessionManifestDefaults,
+  _applyRecordingSessionStateDefaults,
   createCloudSyncState,
   createRuntimeSession
 ) {
-  const sessionId = String(sessionRow?.sessionId || '').trim()
-  if (!sessionId) {
-    return null
-  }
-
-  const sessionDir = join(getRecordingsDirectoryPath(), 'sessions', sessionId)
-  const firstSegmentPath =
-    segmentRows.find((segment) => typeof segment.filePath === 'string' && segment.filePath)
-      ?.filePath || ''
-  const outputPath =
-    typeof sessionRow?.outputPath === 'string' ? resolve(sessionRow.outputPath) : ''
-  const extensionSource = outputPath || firstSegmentPath
-  const extension = extensionSource.split('.').pop()?.toLowerCase() || 'webm'
-  const startedAt = segmentRows.reduce((minimum, segment) => {
-    const value = Number(segment.startedAt || 0)
-    if (!value) {
-      return minimum
-    }
-    return minimum === 0 ? value : Math.min(minimum, value)
-  }, 0)
-  const stoppedAt = segmentRows.reduce(
-    (maximum, segment) => {
-      const value = Number(segment.endedAt || 0)
-      return value > maximum ? value : maximum
-    },
-    Number(sessionRow?.completedAt || 0) || 0
+  return createSessionStateFromDatabaseRecord(
+    sessionRow,
+    segmentRows,
+    createCloudSyncState,
+    createRuntimeSession
   )
-  const totalBytes = segmentRows.reduce((sum, segment) => sum + Number(segment.bytes || 0), 0)
-
-  const manifest = applyRecordingSessionManifestDefaults({
-    version: 2,
-    sessionId,
-    sessionDir,
-    extension,
-    mimeType: getMimeTypeByExtension(extension),
-    segmentDurationMs: DEFAULT_SEGMENT_DURATION_MS,
-    cloudSyncEnabled: true,
-    cloudSync: {
-      ...createCloudSyncState({
-        enabled: true,
-        serverUrl: sessionRow?.serverUrl || ''
-      }),
-      enabled: true,
-      serverUrl: sessionRow?.serverUrl || '',
-      sessionCreated: true,
-      sessionStatus: sessionRow?.status || 'stopped',
-      uploadStatus: sessionRow?.uploadStatus || 'pending',
-      mergeStatus: sessionRow?.mergeStatus || 'pending',
-      uploadedParts: segmentRows.filter((segment) => segment.uploadStatus === 'uploaded').length,
-      totalParts: segmentRows.length,
-      completedAt: Number(sessionRow?.completedAt || 0) || null,
-      lastError: sessionRow?.lastError || '',
-      lastAttemptAt: Number(sessionRow?.lastAttemptAt || 0) || null,
-      nextRetryAt: Number(sessionRow?.nextRetryAt || 0) || null
-    },
-    status: sessionRow?.status || 'stopped',
-    startedAt,
-    stoppedAt: stoppedAt || null,
-    updatedAt: Number(sessionRow?.updatedAt || Date.now()),
-    totalBytes,
-    output: outputPath
-      ? {
-          path: outputPath,
-          status: 'pending',
-          bytes: 0,
-          createdAt: 0,
-          durationSec: null
-        }
-      : null,
-    segments: segmentRows.map((segment) => {
-      const filePath = segment.filePath ? resolve(segment.filePath) : ''
-      return {
-        index: Number(segment.index || 0),
-        fileName: filePath ? filePath.split(sep).pop() || '' : '',
-        path: filePath,
-        partialPath: '',
-        startedAt: Number(segment.startedAt || 0) || null,
-        endedAt: Number(segment.endedAt || 0) || null,
-        bytes: Number(segment.bytes || 0),
-        status: segment.status || 'ready',
-        uploadStatus: segment.uploadStatus || 'pending',
-        checksum: segment.checksum || '',
-        etag: segment.etag || '',
-        uploadedAt: Number(segment.uploadedAt || 0) || null,
-        retryCount: Number(segment.retryCount || 0)
-      }
-    })
-  })
-
-  return createRuntimeSession(manifest)
 }

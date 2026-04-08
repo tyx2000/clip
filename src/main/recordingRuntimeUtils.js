@@ -72,15 +72,8 @@ export function createCloudSyncState({ enabled = false, serverUrl = '' } = {}) {
   return {
     enabled,
     serverUrl: enabled ? serverUrl : '',
-    sessionCreated: false,
-    sessionStatus: enabled ? 'pending' : 'disabled',
-    uploadStatus: enabled ? 'pending' : 'disabled',
-    mergeStatus: enabled ? 'pending' : 'disabled',
-    uploadedParts: 0,
-    totalParts: 0,
+    status: enabled ? 'pending' : 'disabled',
     remoteVideoUrl: '',
-    remoteVideoPath: '',
-    lastUploadedPartIndex: 0,
     lastError: '',
     completedAt: null,
     lastAttemptAt: null,
@@ -101,24 +94,28 @@ export function normalizeSegmentCloudSyncState(segment = {}) {
   }
 }
 
-export function applyRecordingSessionManifestDefaults(manifest = {}) {
-  const cloudSyncEnabled = normalizeCloudSyncEnabled(manifest?.cloudSyncEnabled)
-  const serverUrl = getCloudSyncServerUrl({ cloudSyncServerUrl: manifest?.cloudSync?.serverUrl })
+export function applyRecordingSessionStateDefaults(sessionState = {}) {
+  const cloudSyncEnabled = normalizeCloudSyncEnabled(sessionState?.cloudSyncEnabled)
+  const serverUrl = getCloudSyncServerUrl({
+    cloudSyncServerUrl: sessionState?.cloudSync?.serverUrl
+  })
   const cloudSync = {
     ...createCloudSyncState({
       enabled: cloudSyncEnabled,
       serverUrl
     }),
-    ...(manifest?.cloudSync && typeof manifest.cloudSync === 'object' ? manifest.cloudSync : {})
+    ...(sessionState?.cloudSync && typeof sessionState.cloudSync === 'object'
+      ? sessionState.cloudSync
+      : {})
   }
 
   return {
-    ...manifest,
-    version: Number(manifest?.version || 1),
+    ...sessionState,
+    version: Number(sessionState?.version || 1),
     cloudSyncEnabled,
     cloudSync,
-    segments: Array.isArray(manifest?.segments)
-      ? manifest.segments.map((segment) => ({
+    segments: Array.isArray(sessionState?.segments)
+      ? sessionState.segments.map((segment) => ({
           ...segment,
           ...normalizeSegmentCloudSyncState(segment)
         }))

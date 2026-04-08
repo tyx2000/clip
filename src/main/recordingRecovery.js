@@ -9,10 +9,10 @@ import {
 
 /** Builds recovery helpers for merge, cleanup, and startup restoration. */
 export function createRecordingRecoveryRuntime({
-  persistRecordingSessionManifest,
+  persistRecordingSessionState,
   buildCloudSyncMetadata,
   normalizeSegmentCloudSyncState,
-  applyRecordingSessionManifestDefaults,
+  applyRecordingSessionStateDefaults,
   listSessionArtifactPaths,
   deleteRecordingSessionFromDatabase,
   deleteCloudSessionFromDatabase,
@@ -109,7 +109,7 @@ export function createRecordingRecoveryRuntime({
         createdAt: Number(outputStat.birthtimeMs || outputStat.mtimeMs || Date.now()),
         durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null
       }
-      await persistRecordingSessionManifest(runtimeSession)
+      await persistRecordingSessionState(runtimeSession)
       await writeRecordingMetadata(outputFilePath, {
         durationSec: runtimeSession.manifest.output.durationSec,
         cloudSync: buildCloudSyncMetadata(runtimeSession)
@@ -182,7 +182,7 @@ export function createRecordingRecoveryRuntime({
       createdAt: Number(outputStat.birthtimeMs || outputStat.mtimeMs || Date.now()),
       durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null
     }
-    await persistRecordingSessionManifest(runtimeSession)
+    await persistRecordingSessionState(runtimeSession)
     await writeRecordingMetadata(outputFilePath, {
       durationSec: runtimeSession.manifest.output.durationSec,
       cloudSync: buildCloudSyncMetadata(runtimeSession)
@@ -200,10 +200,10 @@ export function createRecordingRecoveryRuntime({
    * @param {object} runtimeSession Session rebuilt from SQLite.
    */
   async function normalizeRecoveredRecordingSession(runtimeSession) {
-    let manifestChanged = false
+    let sessionStateChanged = false
     const now = Date.now()
 
-    runtimeSession.manifest = applyRecordingSessionManifestDefaults(runtimeSession.manifest)
+    runtimeSession.manifest = applyRecordingSessionStateDefaults(runtimeSession.manifest)
 
     for (const segment of runtimeSession.manifest.segments) {
       const normalizedSyncState = normalizeSegmentCloudSyncState(segment)
@@ -214,7 +214,12 @@ export function createRecordingRecoveryRuntime({
         segment.uploadedAt !== normalizedSyncState.uploadedAt
       ) {
         Object.assign(segment, normalizedSyncState)
-        manifestChanged = true
+        sessionStateChanged = true
+      }
+
+      if (segment.uploadStatus === 'uploading') {
+        segment.uploadStatus = 'pending'
+        sessionStateChanged = true
       }
 
       if (segment?.status === 'ready' && existsSync(segment.path)) {
@@ -233,7 +238,7 @@ export function createRecordingRecoveryRuntime({
         segment.status = 'ready'
         segment.bytes = Number(fileStat.size || 0)
         segment.endedAt = Number(fileStat.mtimeMs || now)
-        manifestChanged = true
+        sessionStateChanged = true
         continue
       }
 
@@ -244,31 +249,48 @@ export function createRecordingRecoveryRuntime({
         segment.bytes = Number(fileStat.size || segment.bytes || 0)
         segment.endedAt = Number(fileStat.mtimeMs || now)
         segment.partialPath = partialPath
-        manifestChanged = true
+        sessionStateChanged = true
         continue
       }
 
       segment.status = 'missing'
       segment.endedAt = Number(segment.endedAt || now)
-      manifestChanged = true
+      sessionStateChanged = true
     }
 
     if (runtimeSession.manifest.status === 'recording') {
       runtimeSession.manifest.status = 'interrupted'
       runtimeSession.manifest.stoppedAt = runtimeSession.manifest.stoppedAt || now
-      manifestChanged = true
+      sessionStateChanged = true
     }
 
     if (runtimeSession.manifest.cloudSyncEnabled) {
-      runtimeSession.manifest.cloudSync.totalParts = runtimeSession.manifest.segments.length
-      runtimeSession.manifest.cloudSync.uploadedParts = runtimeSession.manifest.segments.filter(
-        (segment) => segment.uploadStatus === 'uploaded'
-      ).length
-      manifestChanged = true
+      const hasFailedSegments = runtimeSession.manifest.segments.some(
+        (segment) => segment.uploadStatus === 'failed'
+      )
+      const hasPendingSegments = runtimeSession.manifest.segments.some(
+        (segment) =>
+          segment.status === 'ready' &&
+          segment.uploadStatus !== 'uploaded' &&
+          segment.uploadStatus !== 'disabled'
+      )
+
+      const nextCloudStatus = hasFailedSegments
+        ? 'failed'
+        : hasPendingSegments
+          ? 'pending'
+          : runtimeSession.manifest.cloudSync.status === 'completed'
+            ? 'completed'
+            : 'merging'
+
+      if (runtimeSession.manifest.cloudSync.status !== nextCloudStatus) {
+        runtimeSession.manifest.cloudSync.status = nextCloudStatus
+        sessionStateChanged = true
+      }
     }
 
-    if (manifestChanged) {
-      await persistRecordingSessionManifest(runtimeSession)
+    if (sessionStateChanged) {
+      await persistRecordingSessionState(runtimeSession)
     }
   }
 
@@ -366,7 +388,7 @@ export function createRecordingRecoveryRuntime({
             createdAt: 0,
             message: error instanceof Error ? error.message : 'Failed to recover recording session.'
           }
-          await persistRecordingSessionManifest(runtimeSession).catch(() => {})
+          await persistRecordingSessionState(runtimeSession).catch(() => {})
         }
         console.warn(
           '[recording] failed to recover session:',
@@ -381,7 +403,9 @@ export function createRecordingRecoveryRuntime({
 
   /** Requeues unfinished cloud-sync sessions on app startup. */
   async function resumeAllCloudSyncSessions() {
-    const sessionRows = listCloudSyncSessionRowsFromDatabase()
+    const sessionRows = listCloudSyncSessionRowsFromDatabase().filter((sessionRow) =>
+      ['pending', 'syncing', 'merging', 'failed'].includes(sessionRow.cloudSyncStatus || '')
+    )
     let resumed = 0
 
     for (const sessionRow of sessionRows) {
@@ -394,7 +418,7 @@ export function createRecordingRecoveryRuntime({
         const runtimeSession = await createCloudSyncRuntimeSessionFromDatabase(
           storedSession.sessionRow,
           storedSession.segmentRows,
-          applyRecordingSessionManifestDefaults,
+          applyRecordingSessionStateDefaults,
           createCloudSyncState,
           createRuntimeSession
         )

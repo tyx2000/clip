@@ -15,7 +15,8 @@ const api = {
     ipcRenderer.invoke('screen-recording:session-status', payload),
   saveScreenRecording: (payload) => ipcRenderer.invoke('screen-recording:save', payload),
   listScreenRecordings: () => ipcRenderer.invoke('screen-recording:list'),
-  retryCloudSyncSession: (payload) => ipcRenderer.invoke('screen-recording:cloud-sync-retry', payload),
+  retryCloudSyncSession: (payload) =>
+    ipcRenderer.invoke('screen-recording:cloud-sync-retry', payload),
   resumeAllCloudSyncSessions: () => ipcRenderer.invoke('screen-recording:cloud-sync-resume-all'),
   getScreenRecordingPermissionStatus: () =>
     ipcRenderer.invoke('screen-recording:permission-status'),

@@ -11,7 +11,7 @@ import {
 
 /** Builds the low-level write runtime that appends chunks and seals disk-backed parts. */
 export function createRecordingSegmentsRuntime({
-  persistRecordingSessionManifest,
+  persistRecordingSessionState,
   scheduleCloudSyncProcessing,
   parseChunkPayloadToBuffer
 }) {
@@ -75,7 +75,7 @@ export function createRecordingSegmentsRuntime({
       retryCount: 0
     })
 
-    await persistRecordingSessionManifest(runtimeSession)
+    await persistRecordingSessionState(runtimeSession)
   }
 
   /** Finalizes the currently open segment or upload part.
@@ -118,10 +118,7 @@ export function createRecordingSegmentsRuntime({
     } else {
       runtimeSession.writeStream = null
     }
-    if (runtimeSession.manifest.cloudSyncEnabled && segmentItem) {
-      runtimeSession.manifest.cloudSync.totalParts = runtimeSession.manifest.segments.length
-    }
-    await persistRecordingSessionManifest(runtimeSession)
+    await persistRecordingSessionState(runtimeSession)
 
     if (runtimeSession.manifest.cloudSyncEnabled && segmentItem) {
       scheduleCloudSyncProcessing(runtimeSession)
@@ -189,7 +186,7 @@ export function createRecordingSegmentsRuntime({
       await openRecordingSessionSegment(runtimeSession, nextIndex)
     }
 
-    await persistRecordingSessionManifest(runtimeSession)
+    await persistRecordingSessionState(runtimeSession)
 
     return {
       ok: true,

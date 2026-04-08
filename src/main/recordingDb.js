@@ -6,6 +6,52 @@ export {
   createRuntimeSessionFromRecordingDatabaseRecord
 } from './recordingDbRuntime'
 
+const SESSION_SELECT = `
+  SELECT
+    session_id AS sessionId,
+    session_dir AS sessionDir,
+    extension,
+    mime_type AS mimeType,
+    segment_duration_ms AS segmentDurationMs,
+    status,
+    started_at AS startedAt,
+    stopped_at AS stoppedAt,
+    total_bytes AS totalBytes,
+    output_path AS outputPath,
+    output_status AS outputStatus,
+    output_bytes AS outputBytes,
+    output_created_at AS outputCreatedAt,
+    output_duration_sec AS outputDurationSec,
+    cloud_sync_enabled AS cloudSyncEnabled,
+    cloud_sync_status AS cloudSyncStatus,
+    cloud_server_url AS cloudServerUrl,
+    cloud_remote_video_url AS cloudRemoteVideoUrl,
+    cloud_completed_at AS cloudCompletedAt,
+    cloud_last_error AS cloudLastError,
+    cloud_last_attempt_at AS cloudLastAttemptAt,
+    cloud_next_retry_at AS cloudNextRetryAt,
+    updated_at AS updatedAt
+  FROM recording_sessions
+`
+
+const SEGMENT_SELECT = `
+  SELECT
+    segment_index AS "index",
+    file_path AS filePath,
+    partial_path AS partialPath,
+    status,
+    upload_status AS uploadStatus,
+    bytes,
+    checksum,
+    etag,
+    uploaded_at AS uploadedAt,
+    retry_count AS retryCount,
+    started_at AS startedAt,
+    ended_at AS endedAt,
+    updated_at AS updatedAt
+  FROM recording_session_segments
+`
+
 /** Normalizes one joined metadata row into the shape consumed by the catalog layer.
  * @param {any} row Raw SQLite row.
  */
@@ -110,120 +156,11 @@ export function deleteRecordingMetadataFromDatabase(filePath) {
   })
 }
 
-/** Mirrors the cloud-sync state of one runtime session into SQLite.
- * @param {object} runtimeSession Active or recovered runtime session.
- */
-export function syncCloudSessionToDatabase(runtimeSession) {
-  if (!runtimeSession?.manifest?.cloudSyncEnabled) {
-    return
-  }
+/** Deprecated compatibility shim. Cloud sync now persists through recording_sessions only. */
+export function syncCloudSessionToDatabase() {}
 
-  const db = getRecordingMetadataDatabase()
-  const outputPath = runtimeSession.manifest.output?.path
-    ? resolve(runtimeSession.manifest.output.path)
-    : null
-  const updatedAt = Number(runtimeSession.manifest.updatedAt || Date.now())
-  const cloudSync = runtimeSession.manifest.cloudSync || {}
-
-  runDatabaseTransaction(db, () => {
-    db.prepare(
-      `
-        INSERT INTO cloud_sync_sessions (
-          session_id,
-          output_path,
-          status,
-          upload_status,
-          merge_status,
-          server_url,
-          completed_at,
-          last_error,
-          last_attempt_at,
-          next_retry_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET
-          output_path = excluded.output_path,
-          status = excluded.status,
-          upload_status = excluded.upload_status,
-          merge_status = excluded.merge_status,
-          server_url = excluded.server_url,
-          completed_at = excluded.completed_at,
-          last_error = excluded.last_error,
-          last_attempt_at = excluded.last_attempt_at,
-          next_retry_at = excluded.next_retry_at,
-          updated_at = excluded.updated_at
-      `
-    ).run(
-      runtimeSession.id,
-      outputPath,
-      runtimeSession.manifest.status,
-      cloudSync.uploadStatus || null,
-      cloudSync.mergeStatus || null,
-      cloudSync.serverUrl || null,
-      Number(cloudSync.completedAt || 0) || null,
-      cloudSync.lastError || null,
-      Number(cloudSync.lastAttemptAt || 0) || null,
-      Number(cloudSync.nextRetryAt || 0) || null,
-      updatedAt
-    )
-
-    db.prepare('DELETE FROM cloud_sync_parts WHERE session_id = ?').run(runtimeSession.id)
-    const insertPart = db.prepare(
-      `
-        INSERT INTO cloud_sync_parts (
-          session_id,
-          part_index,
-          file_path,
-          status,
-          upload_status,
-          bytes,
-          checksum,
-          etag,
-          uploaded_at,
-          retry_count,
-          started_at,
-          ended_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-    )
-
-    for (const segment of runtimeSession.manifest.segments) {
-      insertPart.run(
-        runtimeSession.id,
-        Number(segment.index || 0),
-        segment.path ? resolve(segment.path) : null,
-        segment.status || null,
-        segment.uploadStatus || null,
-        Number(segment.bytes || 0),
-        segment.checksum || null,
-        segment.etag || null,
-        Number(segment.uploadedAt || 0) || null,
-        Number(segment.retryCount || 0),
-        Number(segment.startedAt || 0) || null,
-        Number(segment.endedAt || 0) || null,
-        updatedAt
-      )
-    }
-  })
-}
-
-/** Deletes one persisted cloud-sync session and its part rows.
- * @param {string} sessionId Recording session id.
- */
-export function deleteCloudSessionFromDatabase(sessionId) {
-  if (typeof sessionId !== 'string' || !sessionId.trim()) {
-    return
-  }
-
-  const db = getRecordingMetadataDatabase()
-  runDatabaseTransaction(db, () => {
-    db.prepare('DELETE FROM cloud_sync_parts WHERE session_id = ?').run(sessionId)
-    db.prepare('DELETE FROM cloud_sync_sessions WHERE session_id = ?').run(sessionId)
-  })
-}
+/** Deprecated compatibility shim. Cloud sync rows live in recording_sessions only. */
+export function deleteCloudSessionFromDatabase() {}
 
 /** Mirrors local session state and per-part rows into SQLite.
  * @param {object} runtimeSession Active or recovered runtime session.
@@ -236,6 +173,7 @@ export function syncRecordingSessionToDatabase(runtimeSession) {
   const db = getRecordingMetadataDatabase()
   const output = runtimeSession.manifest.output || null
   const updatedAt = Number(runtimeSession.manifest.updatedAt || Date.now())
+  const cloudSync = runtimeSession.manifest.cloudSync || {}
 
   runDatabaseTransaction(db, () => {
     db.prepare(
@@ -243,7 +181,6 @@ export function syncRecordingSessionToDatabase(runtimeSession) {
         INSERT INTO recording_sessions (
           session_id,
           session_dir,
-          manifest_path,
           extension,
           mime_type,
           segment_duration_ms,
@@ -257,9 +194,16 @@ export function syncRecordingSessionToDatabase(runtimeSession) {
           output_created_at,
           output_duration_sec,
           cloud_sync_enabled,
+          cloud_sync_status,
+          cloud_server_url,
+          cloud_remote_video_url,
+          cloud_completed_at,
+          cloud_last_error,
+          cloud_last_attempt_at,
+          cloud_next_retry_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
           session_dir = excluded.session_dir,
           extension = excluded.extension,
@@ -275,12 +219,18 @@ export function syncRecordingSessionToDatabase(runtimeSession) {
           output_created_at = excluded.output_created_at,
           output_duration_sec = excluded.output_duration_sec,
           cloud_sync_enabled = excluded.cloud_sync_enabled,
+          cloud_sync_status = excluded.cloud_sync_status,
+          cloud_server_url = excluded.cloud_server_url,
+          cloud_remote_video_url = excluded.cloud_remote_video_url,
+          cloud_completed_at = excluded.cloud_completed_at,
+          cloud_last_error = excluded.cloud_last_error,
+          cloud_last_attempt_at = excluded.cloud_last_attempt_at,
+          cloud_next_retry_at = excluded.cloud_next_retry_at,
           updated_at = excluded.updated_at
       `
     ).run(
       runtimeSession.id,
       runtimeSession.dir,
-      '',
       runtimeSession.manifest.extension,
       runtimeSession.manifest.mimeType,
       Number(runtimeSession.manifest.segmentDurationMs || DEFAULT_SEGMENT_DURATION_MS),
@@ -294,6 +244,13 @@ export function syncRecordingSessionToDatabase(runtimeSession) {
       Number(output?.createdAt || 0) || null,
       Number(output?.durationSec || 0) || null,
       runtimeSession.manifest.cloudSyncEnabled ? 1 : 0,
+      cloudSync.status || (runtimeSession.manifest.cloudSyncEnabled ? 'pending' : 'disabled'),
+      cloudSync.serverUrl || null,
+      cloudSync.remoteVideoUrl || null,
+      Number(cloudSync.completedAt || 0) || null,
+      cloudSync.lastError || null,
+      Number(cloudSync.lastAttemptAt || 0) || null,
+      Number(cloudSync.nextRetryAt || 0) || null,
       updatedAt
     )
 
@@ -358,19 +315,8 @@ export function listCloudSyncSessionRowsFromDatabase() {
   return db
     .prepare(
       `
-        SELECT
-          session_id AS sessionId,
-          output_path AS outputPath,
-          status,
-          upload_status AS uploadStatus,
-          merge_status AS mergeStatus,
-          server_url AS serverUrl,
-          completed_at AS completedAt,
-          last_error AS lastError,
-          last_attempt_at AS lastAttemptAt,
-          next_retry_at AS nextRetryAt,
-          updated_at AS updatedAt
-        FROM cloud_sync_sessions
+        ${SESSION_SELECT}
+        WHERE cloud_sync_enabled = 1
         ORDER BY updated_at DESC
       `
     )
@@ -378,64 +324,7 @@ export function listCloudSyncSessionRowsFromDatabase() {
 }
 
 export function readCloudSyncSessionRowsFromDatabase(sessionId) {
-  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
-  if (!normalizedSessionId) {
-    return null
-  }
-
-  const db = getRecordingMetadataDatabase()
-  const sessionRow = db
-    .prepare(
-      `
-        SELECT
-          session_id AS sessionId,
-          output_path AS outputPath,
-          status,
-          upload_status AS uploadStatus,
-          merge_status AS mergeStatus,
-          server_url AS serverUrl,
-          completed_at AS completedAt,
-          last_error AS lastError,
-          last_attempt_at AS lastAttemptAt,
-          next_retry_at AS nextRetryAt,
-          updated_at AS updatedAt
-        FROM cloud_sync_sessions
-        WHERE session_id = ?
-      `
-    )
-    .get(normalizedSessionId)
-
-  if (!sessionRow) {
-    return null
-  }
-
-  const segmentRows = db
-    .prepare(
-      `
-        SELECT
-          part_index AS "index",
-          file_path AS filePath,
-          status,
-          upload_status AS uploadStatus,
-          bytes,
-          checksum,
-          etag,
-          uploaded_at AS uploadedAt,
-          retry_count AS retryCount,
-          started_at AS startedAt,
-          ended_at AS endedAt,
-          updated_at AS updatedAt
-        FROM cloud_sync_parts
-        WHERE session_id = ?
-        ORDER BY part_index ASC
-      `
-    )
-    .all(normalizedSessionId)
-
-  return {
-    sessionRow,
-    segmentRows
-  }
+  return readRecordingSessionRowsFromDatabase(sessionId)
 }
 
 export function listLocalRecordingSessionRowsFromDatabase() {
@@ -443,24 +332,7 @@ export function listLocalRecordingSessionRowsFromDatabase() {
   return db
     .prepare(
       `
-        SELECT
-          session_id AS sessionId,
-          session_dir AS sessionDir,
-          extension,
-          mime_type AS mimeType,
-          segment_duration_ms AS segmentDurationMs,
-          status,
-          started_at AS startedAt,
-          stopped_at AS stoppedAt,
-          total_bytes AS totalBytes,
-          output_path AS outputPath,
-          output_status AS outputStatus,
-          output_bytes AS outputBytes,
-          output_created_at AS outputCreatedAt,
-          output_duration_sec AS outputDurationSec,
-          cloud_sync_enabled AS cloudSyncEnabled,
-          updated_at AS updatedAt
-        FROM recording_sessions
+        ${SESSION_SELECT}
         WHERE cloud_sync_enabled = 0
         ORDER BY updated_at DESC
       `
@@ -478,24 +350,7 @@ export function readRecordingSessionRowsFromDatabase(sessionId) {
   const sessionRow = db
     .prepare(
       `
-        SELECT
-          session_id AS sessionId,
-          session_dir AS sessionDir,
-          extension,
-          mime_type AS mimeType,
-          segment_duration_ms AS segmentDurationMs,
-          status,
-          started_at AS startedAt,
-          stopped_at AS stoppedAt,
-          total_bytes AS totalBytes,
-          output_path AS outputPath,
-          output_status AS outputStatus,
-          output_bytes AS outputBytes,
-          output_created_at AS outputCreatedAt,
-          output_duration_sec AS outputDurationSec,
-          cloud_sync_enabled AS cloudSyncEnabled,
-          updated_at AS updatedAt
-        FROM recording_sessions
+        ${SESSION_SELECT}
         WHERE session_id = ?
       `
     )
@@ -508,21 +363,7 @@ export function readRecordingSessionRowsFromDatabase(sessionId) {
   const segmentRows = db
     .prepare(
       `
-        SELECT
-          segment_index AS "index",
-          file_path AS filePath,
-          partial_path AS partialPath,
-          status,
-          upload_status AS uploadStatus,
-          bytes,
-          checksum,
-          etag,
-          uploaded_at AS uploadedAt,
-          retry_count AS retryCount,
-          started_at AS startedAt,
-          ended_at AS endedAt,
-          updated_at AS updatedAt
-        FROM recording_session_segments
+        ${SEGMENT_SELECT}
         WHERE session_id = ?
         ORDER BY segment_index ASC
       `

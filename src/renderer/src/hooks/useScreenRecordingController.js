@@ -664,8 +664,10 @@ export function useScreenRecordingController({
         item?.cloudSync?.enabled &&
         (pendingParts > 0 ||
           failedParts > 0 ||
-          item?.cloudSync?.mergeStatus === 'merge_failed' ||
-          item?.cloudSync?.mergeStatus === 'uploading')
+          item?.cloudSync?.status === 'failed' ||
+          item?.cloudSync?.status === 'syncing' ||
+          item?.cloudSync?.status === 'merging' ||
+          item?.cloudSync?.status === 'pending')
 
       if (cloudSyncIncomplete) {
         const confirmed = window.confirm(

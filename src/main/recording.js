@@ -11,7 +11,6 @@ import {
   readCloudSyncSessionRowsFromDatabase,
   readRecordingMetadataFromDatabase,
   readRecordingSessionRowsFromDatabase,
-  syncCloudSessionToDatabase,
   syncRecordingSessionToDatabase,
   writeRecordingMetadataToDatabase
 } from './recordingDb'
@@ -26,7 +25,7 @@ import { createRecordingSessionsRuntime } from './recordingSessions'
 import { createRecordingCatalog } from './recordingCatalog'
 import { createRecordingHandlersRegistrar } from './recordingHandlers'
 import {
-  applyRecordingSessionManifestDefaults,
+  applyRecordingSessionStateDefaults,
   createCloudSyncState,
   getCloudSyncRetryDelayMs,
   getCloudSyncServerUrl,
@@ -50,9 +49,9 @@ let recordingSessionsRuntime = null
 let recordingCatalog = null
 let recordingHandlersRegistrar = null
 
-/** Thin forwarding helper into the sessions runtime so cloud sync can persist state. */
-function persistRecordingSessionManifest(...args) {
-  return recordingSessionsRuntime.persistRecordingSessionManifest(...args)
+/** Thin forwarding helper into the sessions runtime so cloud sync can persist session state. */
+function persistRecordingSessionState(...args) {
+  return recordingSessionsRuntime.persistRecordingSessionState(...args)
 }
 
 /** Thin forwarding helper that builds persisted cloud-sync metadata for one output. */
@@ -79,7 +78,7 @@ protocol.registerSchemesAsPrivileged([
 
 const cloudSyncRuntime = createCloudSyncRuntime({
   getCloudSyncRetryDelayMs,
-  persistRecordingSessionManifest,
+  persistRecordingSessionState,
   buildCloudSyncMetadata,
   writeRecordingMetadata,
   cleanupRecordingSessionArtifacts,
@@ -108,9 +107,8 @@ recordingSessionsRuntime = createRecordingSessionsRuntime({
   getCloudSyncServerUrl,
   createCloudSyncState,
   normalizeSegmentCloudSyncState,
-  applyRecordingSessionManifestDefaults,
+  applyRecordingSessionStateDefaults,
   syncRecordingSessionToDatabase,
-  syncCloudSessionToDatabase,
   writeRecordingMetadataToDatabase,
   listSessionArtifactPaths,
   deleteRecordingSessionFromDatabase,
@@ -195,21 +193,18 @@ async function retryCloudSyncSession(payload = {}) {
   }
 
   runtimeSession.manifest.cloudSync.lastError = ''
-  runtimeSession.manifest.cloudSync.uploadStatus = 'pending'
+  runtimeSession.manifest.cloudSync.status = 'pending'
+  runtimeSession.manifest.cloudSync.completedAt = null
+  runtimeSession.manifest.cloudSync.remoteVideoUrl = ''
   runtimeSession.manifest.cloudSync.nextRetryAt = null
 
   for (const segment of runtimeSession.manifest.segments) {
-    if (segment.status === 'ready' && segment.uploadStatus !== 'uploaded') {
+    if (segment.status === 'ready' && segment.uploadStatus === 'failed') {
       segment.uploadStatus = 'pending'
     }
   }
 
-  runtimeSession.manifest.cloudSync.uploadedParts = runtimeSession.manifest.segments.filter(
-    (segment) => segment.uploadStatus === 'uploaded'
-  ).length
-  runtimeSession.manifest.cloudSync.totalParts = runtimeSession.manifest.segments.length
-
-  await persistRecordingSessionManifest(runtimeSession)
+  await persistRecordingSessionState(runtimeSession)
   scheduleCloudSyncProcessing(runtimeSession)
 
   return {

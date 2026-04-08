@@ -1,18 +1,39 @@
 import { mkdir, statfs } from 'fs/promises'
 import { LOW_DISK_SPACE_THRESHOLD_BYTES, getRecordingsDirectoryPath } from './recordingPaths'
 
-/** Builds helpers that own manifest shape, live summaries, and SQLite sync. */
+/** Builds helpers that own session-state shape, live summaries, and SQLite sync. */
 export function createRecordingSessionStateRuntime({
   getCloudSyncServerUrl,
   createCloudSyncState,
   syncRecordingSessionToDatabase,
-  syncCloudSessionToDatabase,
   writeRecordingMetadataToDatabase
 }) {
-  /** Creates the canonical in-memory manifest for a new recording session.
+  function getCloudSyncPartStats(runtimeSession) {
+    const uploadedParts = runtimeSession.manifest.segments.filter(
+      (segment) => segment.uploadStatus === 'uploaded'
+    ).length
+    const failedParts = runtimeSession.manifest.segments.filter(
+      (segment) => segment.uploadStatus === 'failed'
+    ).length
+    const pendingParts = runtimeSession.manifest.segments.filter(
+      (segment) =>
+        segment.status === 'ready' &&
+        segment.uploadStatus !== 'uploaded' &&
+        segment.uploadStatus !== 'disabled'
+    ).length
+
+    return {
+      uploadedParts,
+      failedParts,
+      pendingParts,
+      totalParts: runtimeSession.manifest.segments.length
+    }
+  }
+
+  /** Creates the canonical in-memory session state for a new recording session.
    * @param {object} options Session creation inputs.
    */
-  function createRecordingSessionManifest({
+  function createRecordingSessionState({
     sessionId,
     sessionDir,
     extension,
@@ -52,27 +73,11 @@ export function createRecordingSessionStateRuntime({
       return null
     }
 
-    const uploadedParts = runtimeSession.manifest.segments.filter(
-      (segment) => segment.uploadStatus === 'uploaded'
-    ).length
-    const failedParts = runtimeSession.manifest.segments.filter(
-      (segment) => segment.uploadStatus === 'failed'
-    ).length
-    const pendingParts = runtimeSession.manifest.segments.filter(
-      (segment) =>
-        segment.status === 'ready' &&
-        segment.uploadStatus !== 'uploaded' &&
-        segment.uploadStatus !== 'disabled'
-    ).length
-
     return {
       ...runtimeSession.manifest.cloudSync,
       enabled: true,
       sessionId: runtimeSession.id,
-      uploadedParts,
-      failedParts,
-      pendingParts,
-      totalParts: runtimeSession.manifest.segments.length
+      ...getCloudSyncPartStats(runtimeSession)
     }
   }
 
@@ -81,18 +86,6 @@ export function createRecordingSessionStateRuntime({
    */
   function getRecordingSessionSummary(runtimeSession) {
     const currentPart = runtimeSession.currentSegment
-    const uploadedParts = runtimeSession.manifest.segments.filter(
-      (part) => part.uploadStatus === 'uploaded'
-    ).length
-    const failedParts = runtimeSession.manifest.segments.filter(
-      (part) => part.uploadStatus === 'failed'
-    ).length
-    const pendingParts = runtimeSession.manifest.segments.filter(
-      (part) =>
-        part.status === 'ready' &&
-        part.uploadStatus !== 'uploaded' &&
-        part.uploadStatus !== 'disabled'
-    ).length
 
     return {
       sessionId: runtimeSession.id,
@@ -109,10 +102,7 @@ export function createRecordingSessionStateRuntime({
       cloudSyncEnabled: runtimeSession.manifest.cloudSyncEnabled === true,
       cloudSync: {
         ...runtimeSession.manifest.cloudSync,
-        uploadedParts,
-        failedParts,
-        pendingParts,
-        totalParts: runtimeSession.manifest.segments.length
+        ...getCloudSyncPartStats(runtimeSession)
       }
     }
   }
@@ -135,10 +125,9 @@ export function createRecordingSessionStateRuntime({
   /** Flushes the current runtime session snapshot into SQLite.
    * @param {object} runtimeSession Runtime session to persist.
    */
-  async function persistRecordingSessionManifest(runtimeSession) {
+  async function persistRecordingSessionState(runtimeSession) {
     runtimeSession.manifest.updatedAt = Date.now()
     syncRecordingSessionToDatabase(runtimeSession)
-    syncCloudSessionToDatabase(runtimeSession)
     syncRuntimeSessionOutputMetadata(runtimeSession)
   }
 
@@ -177,25 +166,26 @@ export function createRecordingSessionStateRuntime({
     }
   }
 
-  /** Wraps one manifest-like payload into the mutable runtime-session container.
-   * @param {object} manifest Canonical session payload.
+  /** Wraps one session-state payload into the mutable runtime-session container.
+   * The runtime field remains `manifest` for backward compatibility inside main-process modules.
+   * @param {object} sessionState Canonical session payload.
    */
-  function createRuntimeSession(manifest) {
+  function createRuntimeSession(sessionState) {
     return {
-      id: manifest.sessionId,
-      dir: manifest.sessionDir,
+      id: sessionState.sessionId,
+      dir: sessionState.sessionDir,
       writeQueue: Promise.resolve(),
       writeStream: null,
       partWriteStream: null,
       captureTempPath: '',
       currentSegment: null,
-      manifest
+      manifest: sessionState
     }
   }
 
   return {
-    createRecordingSessionManifest,
-    persistRecordingSessionManifest,
+    createRecordingSessionState,
+    persistRecordingSessionState,
     buildCloudSyncMetadata,
     getRecordingSessionSummary,
     getRecordingSessionStatus,

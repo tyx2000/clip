@@ -17,9 +17,8 @@ export function createRecordingSessionsRuntime({
   getCloudSyncServerUrl,
   createCloudSyncState,
   normalizeSegmentCloudSyncState,
-  applyRecordingSessionManifestDefaults,
+  applyRecordingSessionStateDefaults,
   syncRecordingSessionToDatabase,
-  syncCloudSessionToDatabase,
   writeRecordingMetadataToDatabase,
   listSessionArtifactPaths,
   deleteRecordingSessionFromDatabase,
@@ -44,22 +43,21 @@ export function createRecordingSessionsRuntime({
     getCloudSyncServerUrl,
     createCloudSyncState,
     syncRecordingSessionToDatabase,
-    syncCloudSessionToDatabase,
     writeRecordingMetadataToDatabase
   })
   const {
-    createRecordingSessionManifest,
-    persistRecordingSessionManifest,
+    createRecordingSessionState,
+    persistRecordingSessionState,
     buildCloudSyncMetadata,
     getRecordingSessionStatus,
     createRuntimeSession
   } = stateRuntime
 
   const recoveryRuntime = createRecordingRecoveryRuntime({
-    persistRecordingSessionManifest,
+    persistRecordingSessionState,
     buildCloudSyncMetadata,
     normalizeSegmentCloudSyncState,
-    applyRecordingSessionManifestDefaults,
+    applyRecordingSessionStateDefaults,
     listSessionArtifactPaths,
     deleteRecordingSessionFromDatabase,
     deleteCloudSessionFromDatabase,
@@ -84,7 +82,7 @@ export function createRecordingSessionsRuntime({
     resumeAllCloudSyncSessions
   } = recoveryRuntime
   const segmentsRuntime = createRecordingSegmentsRuntime({
-    persistRecordingSessionManifest,
+    persistRecordingSessionState,
     scheduleCloudSyncProcessing,
     parseChunkPayloadToBuffer
   })
@@ -143,7 +141,7 @@ export function createRecordingSessionsRuntime({
       writeQueue: Promise.resolve(),
       writeStream: null,
       currentSegment: null,
-      manifest: createRecordingSessionManifest({
+      manifest: createRecordingSessionState({
         sessionId,
         sessionDir,
         extension,
@@ -234,7 +232,7 @@ export function createRecordingSessionsRuntime({
         runtimeSession.writeStream = null
       }
 
-      await persistRecordingSessionManifest(runtimeSession)
+      await persistRecordingSessionState(runtimeSession)
       activeRecordingSessions.delete(runtimeSession.id)
 
       try {
@@ -256,7 +254,7 @@ export function createRecordingSessionsRuntime({
           createdAt: 0,
           message: error instanceof Error ? error.message : 'Failed to merge recording session.'
         }
-        await persistRecordingSessionManifest(runtimeSession)
+        await persistRecordingSessionState(runtimeSession)
 
         return {
           ok: false,
@@ -322,7 +320,7 @@ export function createRecordingSessionsRuntime({
       return await createCloudSyncRuntimeSessionFromDatabase(
         storedSession.sessionRow,
         storedSession.segmentRows,
-        applyRecordingSessionManifestDefaults,
+        applyRecordingSessionStateDefaults,
         createCloudSyncState,
         createRuntimeSession
       )
@@ -338,7 +336,7 @@ export function createRecordingSessionsRuntime({
     createRuntimeSession,
     getActiveRecordingSession,
     getRecordingSessionStatus,
-    persistRecordingSessionManifest,
+    persistRecordingSessionState,
     appendRecordingSessionChunk,
     rotateRecordingSessionSegment,
     stopRecordingSession,
