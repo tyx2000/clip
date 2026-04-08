@@ -24,6 +24,7 @@
     "ffmpeg-static": "^5.3.0",
     "react-router-dom": "^7.13.1",
     "styled-components": "^6.3.12",
+    "ws": "^8.20.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

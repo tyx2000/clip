@@ -1,15 +1,17 @@
-import { useCallback, useMemo } from 'react'
+import PropTypes from 'prop-types'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import styled from 'styled-components'
-import RecordingVideoCard from './components/RecordingVideoCard'
+import MeetingPanel from './components/MeetingPanel'
+import MeetingRoomCard from './components/MeetingRoomCard'
 import SourcePickerModal from './components/SourcePickerModal'
-import { formatBytes, formatDuration, getPreferredRecorderMimeType } from './utils/recordingUtils'
-import { useScreenRecordingController } from './hooks/useScreenRecordingController'
+import { useScreenShareController } from './hooks/useScreenShareController'
+import { readMeetingRooms, removeMeetingRoom, upsertMeetingRoom } from './utils/meetingRoomsStorage'
 
 const Page = styled.main`
   height: 100%;
   padding: 22px;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto 1fr;
   gap: 14px;
 `
 
@@ -56,9 +58,9 @@ const MetricsRow = styled.div`
 const MetricPill = styled.span`
   border-radius: 999px;
   padding: 5px 9px;
-  border: 1px solid ${({ $warning }) => ($warning ? '#fecaca' : 'var(--line-soft)')};
-  background: ${({ $warning }) => ($warning ? '#fef2f2' : 'var(--color-block-input)')};
-  color: ${({ $warning }) => ($warning ? '#b91c1c' : 'var(--color-text-soft)')};
+  border: 1px solid var(--line-soft);
+  background: var(--color-block-input);
+  color: var(--color-text-soft);
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
@@ -70,18 +72,6 @@ const TopActions = styled.div`
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
-`
-
-const RecordTimeBadge = styled.span`
-  min-width: 68px;
-  text-align: center;
-  border-radius: 10px;
-  padding: 9px 12px;
-  border: 1px solid ${({ $active }) => ($active ? '#fecaca' : 'var(--line-soft)')};
-  background: ${({ $active }) => ($active ? '#fef2f2' : 'var(--color-block-input)')};
-  color: ${({ $active }) => ($active ? '#b91c1c' : 'var(--color-text)')};
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
 `
 
 const Button = styled.button`
@@ -100,9 +90,9 @@ const Button = styled.button`
   }
 `
 
-const RecordButton = styled(Button)`
+const MeetingButton = styled(Button)`
   border: none;
-  background: ${({ $active }) => ($active ? '#b42318' : 'var(--color-block-button)')};
+  background: var(--color-block-button);
   color: #ffffff;
 `
 
@@ -111,6 +101,9 @@ const ListWrap = styled.section`
   border: 1px solid var(--line-soft);
   background: var(--color-block-card);
   padding: 14px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 12px;
 `
 
 const ListHeader = styled.div`
@@ -120,7 +113,7 @@ const ListHeader = styled.div`
   gap: 10px;
 `
 
-const VideosGrid = styled.div`
+const RoomsGrid = styled.div`
   min-height: 320px;
   display: grid;
   place-items: ${({ $hasItems }) => ($hasItems ? 'stretch' : 'center')};
@@ -138,7 +131,7 @@ const EmptyState = styled.p`
   text-align: center;
 `
 
-const RecordingGrid = styled.div`
+const RoomsList = styled.div`
   width: 100%;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -146,195 +139,305 @@ const RecordingGrid = styled.div`
   gap: 12px;
 `
 
-const PlayerPage = styled.main`
-  height: 100%;
-  display: grid;
-  grid-template-rows: auto 1fr;
-  background: #0b1020;
-  color: #e5e7eb;
-`
-
-const PlayerHeader = styled.header`
-  padding: 10px 14px;
-  border-bottom: 1px solid #1f2937;
-  color: #93c5fd;
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-`
-
-const PlayerBody = styled.section`
-  padding: 12px;
-  display: grid;
-  place-items: center;
-`
-
-const PlayerVideo = styled.video`
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: #000;
-  border-radius: 8px;
-`
-
-function App() {
-  const playerParams = useMemo(() => new URLSearchParams(window.location.search), [])
-  const playerUrl = playerParams.get('player') || ''
-  const playerName = playerParams.get('name') || '录制回放'
-  const isPlayerWindow = Boolean(playerUrl)
-  const preferredMimeType = useMemo(() => getPreferredRecorderMimeType(), [])
-
-  const applySessionStats = useCallback((result, setRecordingStats) => {
-    if (!result) {
-      return
-    }
-
-    setRecordingStats({
-      partCount: Number(result.partCount || 0),
-      currentPartIndex: Number(result.currentPartIndex || 0),
-      currentPartBytes: Number(result.currentPartBytes || 0),
-      totalBytes: Number(result.totalBytes || 0),
-      freeBytes: Number(result.storage?.freeBytes || 0),
-      lowDiskSpace: Boolean(result.storage?.lowDiskSpace),
-      cloudSyncEnabled: Boolean(result.cloudSyncEnabled),
-      cloudSync: result.cloudSync || null
-    })
-  }, [])
-
-  const {
-    recordings,
-    isLoadingList,
-    pickerOpen,
-    pickerLoading,
-    pickerSources,
-    pickerSelectedSourceId,
-    pickerCloudSyncEnabled,
-    setPickerSelectedSourceId,
-    setPickerCloudSyncEnabled,
-    elapsedSec,
-    statusMessage,
-    recordingStats,
-    displayedCurrentPartBytes,
-    isRecording,
-    isBusy,
-    loadRecordings,
-    handleRecordButtonClick,
-    cancelRecording,
-    handleConfirmSourceAndStart,
-    handleCancelPicker,
-    handleOpenRecording,
-    handleRevealRecording,
-    handleDeleteRecordingWithGuard,
-    handleRetryCloudSync
-  } = useScreenRecordingController({
-    isPlayerWindow,
-    playerName,
-    preferredMimeType,
-    applySessionStats
-  })
-
-  if (isPlayerWindow) {
-    return (
-      <PlayerPage>
-        <PlayerHeader title={playerName}>{playerName}</PlayerHeader>
-        <PlayerBody>
-          <PlayerVideo controls preload="metadata" src={playerUrl} />
-        </PlayerBody>
-      </PlayerPage>
-    )
+function parseInitialSession(searchParams) {
+  const raw = searchParams.get('session')
+  if (!raw) {
+    return null
   }
+
+  try {
+    return JSON.parse(decodeURIComponent(raw))
+  } catch {
+    return null
+  }
+}
+
+function MeetingWindow({ initialRoomId, initialSessionPayload }) {
+  const shareController = useScreenShareController({
+    isMeetingWindow: true,
+    initialRoomId,
+    initialSessionPayload
+  })
 
   return (
     <>
-      <Page>
-        <TopBar>
-          <TitleGroup>
-            <Title>屏幕录制</Title>
-            <Subtitle>点击开始录制后选择屏幕或窗口，确认后开始录制。</Subtitle>
-            <StatusText>{statusMessage}</StatusText>
-            {recordingStats ? (
-              <MetricsRow>
-                <MetricPill>已写入 {formatBytes(recordingStats.totalBytes)}</MetricPill>
-                <MetricPill>
-                  当前分片 #{recordingStats.currentPartIndex || 1} ·{' '}
-                  {formatBytes(displayedCurrentPartBytes)}
-                </MetricPill>
-                <MetricPill>分片数 {recordingStats.partCount}</MetricPill>
-                <MetricPill>
-                  {recordingStats.cloudSyncEnabled
-                    ? `云同步开启 · 待传 ${Number(recordingStats.cloudSync?.pendingParts || 0)} · 失败 ${Number(recordingStats.cloudSync?.failedParts || 0)}`
-                    : '云同步关闭'}
-                </MetricPill>
-                <MetricPill $warning={recordingStats.lowDiskSpace}>
-                  可用空间 {formatBytes(recordingStats.freeBytes)}
-                </MetricPill>
-              </MetricsRow>
-            ) : null}
-          </TitleGroup>
-          <TopActions>
-            <RecordTimeBadge $active={isRecording}>{formatDuration(elapsedSec)}</RecordTimeBadge>
-            {isRecording ? (
-              <Button type="button" onClick={cancelRecording} disabled={isBusy}>
-                取消录制
-              </Button>
-            ) : null}
-            <RecordButton
-              type="button"
-              onClick={handleRecordButtonClick}
-              disabled={isBusy}
-              $active={isRecording}
-            >
-              {isRecording ? '停止录制' : isBusy ? '处理中...' : '开始录制'}
-            </RecordButton>
-          </TopActions>
-        </TopBar>
-
-        <ListWrap>
-          <ListHeader>
-            <SectionTitle>已录制视频</SectionTitle>
-            <Button type="button" onClick={loadRecordings} disabled={isLoadingList || isBusy}>
-              {isLoadingList ? '加载中...' : '刷新列表'}
-            </Button>
-          </ListHeader>
-
-          <VideosGrid $hasItems={!isLoadingList && recordings.length > 0}>
-            {isLoadingList ? (
-              <EmptyState>正在加载录屏列表...</EmptyState>
-            ) : recordings.length === 0 ? (
-              <EmptyState>暂无录屏文件</EmptyState>
-            ) : (
-              <RecordingGrid>
-                {recordings.map((item) => (
-                  <RecordingVideoCard
-                    key={item.path}
-                    item={item}
-                    onOpen={handleOpenRecording}
-                    onReveal={handleRevealRecording}
-                    onDelete={handleDeleteRecordingWithGuard}
-                    onRetryCloudSync={handleRetryCloudSync}
-                  />
-                ))}
-              </RecordingGrid>
-            )}
-          </VideosGrid>
-        </ListWrap>
-      </Page>
+      <MeetingPanel
+        roomState={shareController.roomState}
+        shareState={shareController.shareState}
+        connectionLabel={shareController.connectionLabel}
+        microphoneEnabled={shareController.microphoneEnabled}
+        microphoneState={shareController.microphoneState}
+        statusMessage={shareController.statusMessage}
+        roomInfo={shareController.roomInfo}
+        joinRoomId={shareController.joinRoomId}
+        setJoinRoomId={shareController.setJoinRoomId}
+        localVideoRef={shareController.localVideoRef}
+        remoteVideoRef={shareController.remoteVideoRef}
+        isJoined={shareController.isJoined}
+        isSharing={shareController.isSharing}
+        isHost={shareController.isHost}
+        isViewer={shareController.isViewer}
+        onCreateRoom={shareController.createRoom}
+        onJoinRoom={shareController.joinRoom}
+        onLeaveRoom={shareController.leaveRoom}
+        onOpenSourcePicker={shareController.openSourcePicker}
+        onStopSharing={shareController.stopSharing}
+        onCopyRoomId={shareController.copyRoomId}
+        onToggleMicrophone={shareController.toggleMicrophone}
+      />
 
       <SourcePickerModal
-        open={pickerOpen}
-        loading={pickerLoading}
-        sources={pickerSources}
-        selectedSourceId={pickerSelectedSourceId}
-        cloudSyncEnabled={pickerCloudSyncEnabled}
-        isBusy={isBusy}
-        onSelect={setPickerSelectedSourceId}
-        onToggleCloudSync={setPickerCloudSyncEnabled}
-        onCancel={handleCancelPicker}
-        onConfirm={handleConfirmSourceAndStart}
+        open={shareController.pickerOpen}
+        loading={shareController.pickerLoading}
+        sources={shareController.pickerSources}
+        selectedSourceId={shareController.pickerSelectedSourceId}
+        cloudSyncEnabled={false}
+        showCloudSyncToggle={false}
+        title="选择共享源"
+        description="请选择要共享的屏幕或窗口，然后点击“开始共享”。"
+        confirmLabel="开始共享"
+        isBusy={shareController.shareState === 'starting'}
+        onSelect={shareController.setPickerSelectedSourceId}
+        onToggleCloudSync={shareController.noopToggle}
+        onCancel={shareController.closePicker}
+        onConfirm={shareController.beginShareWithSource}
       />
     </>
   )
+}
+
+MeetingWindow.propTypes = {
+  initialRoomId: PropTypes.string.isRequired,
+  initialSessionPayload: PropTypes.shape({
+    roomId: PropTypes.string,
+    role: PropTypes.string,
+    peerId: PropTypes.string,
+    token: PropTypes.string,
+    wsUrl: PropTypes.string
+  })
+}
+
+MeetingWindow.defaultProps = {
+  initialSessionPayload: null
+}
+
+function LobbyWindow() {
+  const [rooms, setRooms] = useState([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [statusMessage, setStatusMessage] = useState(
+    '点击“会议”创建新房间，点击房间卡片可重新进入会议。'
+  )
+  const [isCreating, setIsCreating] = useState(false)
+
+  const refreshRooms = useCallback(async () => {
+    setIsLoading(true)
+
+    try {
+      const storedRooms = readMeetingRooms()
+      const getRoom = window.api?.getScreenShareRoom
+
+      const enrichedRooms = await Promise.all(
+        storedRooms.map(async (item) => {
+          if (typeof getRoom !== 'function') {
+            return {
+              ...item,
+              hostPresent: false,
+              shareActive: false,
+              viewerCount: 0,
+              unavailable: true
+            }
+          }
+
+          try {
+            const payload = await getRoom({ roomId: item.roomId })
+            if (!payload?.ok) {
+              return {
+                ...item,
+                hostPresent: false,
+                shareActive: false,
+                viewerCount: 0,
+                unavailable: true
+              }
+            }
+
+            return {
+              ...item,
+              hostPresent: Boolean(payload.hostPresent),
+              shareActive: Boolean(payload.shareActive),
+              viewerCount: Number(payload.viewerCount || 0),
+              unavailable: false
+            }
+          } catch {
+            return {
+              ...item,
+              hostPresent: false,
+              shareActive: false,
+              viewerCount: 0,
+              unavailable: true
+            }
+          }
+        })
+      )
+
+      setRooms(enrichedRooms)
+    } catch (error) {
+      setStatusMessage(error?.message || '读取房间列表失败。')
+      setRooms(readMeetingRooms())
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshRooms()
+  }, [refreshRooms])
+
+  const openMeetingWindow = useCallback(async (payload) => {
+    if (typeof window.api?.openScreenShareMeetingWindow !== 'function') {
+      throw new Error('当前环境不支持打开会议窗口。')
+    }
+
+    const result = await window.api.openScreenShareMeetingWindow(payload)
+    if (!result?.ok) {
+      throw new Error(result?.message || '打开会议窗口失败。')
+    }
+  }, [])
+
+  const handleCreateMeeting = useCallback(async () => {
+    setIsCreating(true)
+    setStatusMessage('正在创建会议房间...')
+
+    try {
+      if (typeof window.api?.createScreenShareRoom !== 'function') {
+        throw new Error('当前环境不支持创建会议房间。')
+      }
+
+      const payload = await window.api.createScreenShareRoom()
+      if (!payload?.ok) {
+        throw new Error(payload?.message || '创建会议房间失败。')
+      }
+
+      const nextRooms = upsertMeetingRoom({
+        roomId: payload.roomId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        role: payload.role,
+        peerId: payload.peerId,
+        token: payload.token,
+        wsUrl: payload.wsUrl,
+        hostPresent: true,
+        shareActive: false,
+        viewerCount: Number(payload.viewerCount || 0)
+      })
+
+      setRooms(nextRooms)
+      await openMeetingWindow({
+        roomId: payload.roomId,
+        sessionPayload: {
+          roomId: payload.roomId,
+          role: payload.role,
+          peerId: payload.peerId,
+          token: payload.token,
+          wsUrl: payload.wsUrl
+        }
+      })
+      setStatusMessage(`房间 ${payload.roomId} 已创建。`)
+    } catch (error) {
+      setStatusMessage(error?.message || '创建会议房间失败。')
+    } finally {
+      setIsCreating(false)
+    }
+  }, [openMeetingWindow])
+
+  const handleOpenRoom = useCallback(
+    async (item) => {
+      try {
+        await openMeetingWindow({
+          roomId: item.roomId,
+          sessionPayload: {
+            roomId: item.roomId,
+            role: item.role || 'host',
+            peerId: item.peerId,
+            token: item.token,
+            wsUrl: item.wsUrl
+          }
+        })
+        setStatusMessage(`正在进入房间 ${item.roomId}。`)
+      } catch (error) {
+        setStatusMessage(error?.message || '进入会议失败。')
+      }
+    },
+    [openMeetingWindow]
+  )
+
+  const handleDeleteRoom = useCallback((roomId) => {
+    setRooms(removeMeetingRoom(roomId))
+    setStatusMessage(`已删除房间 ${roomId}。`)
+  }, [])
+
+  return (
+    <Page>
+      <TopBar>
+        <TitleGroup>
+          <Title>会议</Title>
+          <Subtitle>点击“会议”创建新房间，已创建房间可直接重新进入。</Subtitle>
+          <StatusText>{statusMessage}</StatusText>
+          <MetricsRow>
+            <MetricPill>房间数 {rooms.length}</MetricPill>
+          </MetricsRow>
+        </TitleGroup>
+
+        <TopActions>
+          <MeetingButton type="button" onClick={handleCreateMeeting} disabled={isCreating}>
+            {isCreating ? '创建中...' : '会议'}
+          </MeetingButton>
+          <Button type="button" onClick={refreshRooms} disabled={isLoading || isCreating}>
+            {isLoading ? '刷新中...' : '刷新列表'}
+          </Button>
+        </TopActions>
+      </TopBar>
+
+      <ListWrap>
+        <ListHeader>
+          <SectionTitle>已创建房间</SectionTitle>
+        </ListHeader>
+
+        <RoomsGrid $hasItems={!isLoading && rooms.length > 0}>
+          {isLoading ? (
+            <EmptyState>正在加载房间列表...</EmptyState>
+          ) : rooms.length === 0 ? (
+            <EmptyState>暂无已创建房间</EmptyState>
+          ) : (
+            <RoomsList>
+              {rooms.map((item) => (
+                <MeetingRoomCard
+                  key={item.roomId}
+                  item={item}
+                  onOpen={handleOpenRoom}
+                  onDelete={handleDeleteRoom}
+                />
+              ))}
+            </RoomsList>
+          )}
+        </RoomsGrid>
+      </ListWrap>
+    </Page>
+  )
+}
+
+function App() {
+  const params = useMemo(() => new URLSearchParams(window.location.search), [])
+  const initialRoomId = params.get('roomId') || ''
+  const initialSessionPayload = parseInitialSession(params)
+  const isMeetingWindow = params.get('meeting') === '1'
+
+  if (isMeetingWindow) {
+    return (
+      <MeetingWindow initialRoomId={initialRoomId} initialSessionPayload={initialSessionPayload} />
+    )
+  }
+
+  return <LobbyWindow />
 }
 
 export default App

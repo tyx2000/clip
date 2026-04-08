@@ -171,7 +171,11 @@ function SourcePickerModal({
   sources,
   selectedSourceId,
   cloudSyncEnabled,
+  showCloudSyncToggle = true,
   isBusy,
+  title = '选择共享源',
+  description = '请选择要共享的屏幕或应用窗口，然后点击“确定开始”。',
+  confirmLabel = '确定开始',
   onSelect,
   onToggleCloudSync,
   onCancel,
@@ -185,23 +189,25 @@ function SourcePickerModal({
 
   return (
     <PickerOverlay>
-      <PickerDialog role="dialog" aria-modal="true" aria-label="选择录制源">
+      <PickerDialog role="dialog" aria-modal="true" aria-label={title}>
         <PickerHeader>
           <PickerHeaderMeta>
-            <PickerTitle>选择录制源</PickerTitle>
-            <PickerDesc>请选择要录制的屏幕或应用窗口，然后点击“确定开始”。</PickerDesc>
+            <PickerTitle>{title}</PickerTitle>
+            <PickerDesc>{description}</PickerDesc>
           </PickerHeaderMeta>
 
           <PickerHeaderActions>
-            <SyncToggleLabel>
-              <SyncToggle
-                type="checkbox"
-                checked={cloudSyncEnabled}
-                onChange={(event) => onToggleCloudSync(event.target.checked)}
-                disabled={isBusy}
-              />
-              云端同步
-            </SyncToggleLabel>
+            {showCloudSyncToggle ? (
+              <SyncToggleLabel>
+                <SyncToggle
+                  type="checkbox"
+                  checked={cloudSyncEnabled}
+                  onChange={(event) => onToggleCloudSync(event.target.checked)}
+                  disabled={isBusy}
+                />
+                云端同步
+              </SyncToggleLabel>
+            ) : null}
             <Button type="button" onClick={onCancel} disabled={isBusy}>
               取消
             </Button>
@@ -210,7 +216,7 @@ function SourcePickerModal({
               onClick={onConfirm}
               disabled={!selectedSourceId || loading || isBusy}
             >
-              确定开始
+              {confirmLabel}
             </ConfirmButton>
           </PickerHeaderActions>
         </PickerHeader>
@@ -218,9 +224,9 @@ function SourcePickerModal({
         <PickerBody>
           <PickerSourcesGridWrap $hasItems={hasItems}>
             {loading ? (
-              <StateText>正在加载录制源...</StateText>
+              <StateText>正在加载共享源...</StateText>
             ) : sources.length === 0 ? (
-              <StateText>没有可用录制源。</StateText>
+              <StateText>没有可用共享源。</StateText>
             ) : (
               <PickerGrid>
                 {sources.map((source) => (
@@ -263,7 +269,11 @@ SourcePickerModal.propTypes = {
   ).isRequired,
   selectedSourceId: PropTypes.string.isRequired,
   cloudSyncEnabled: PropTypes.bool.isRequired,
+  showCloudSyncToggle: PropTypes.bool,
   isBusy: PropTypes.bool.isRequired,
+  title: PropTypes.string,
+  description: PropTypes.string,
+  confirmLabel: PropTypes.string,
   onSelect: PropTypes.func.isRequired,
   onToggleCloudSync: PropTypes.func.isRequired,
   onCancel: PropTypes.func.isRequired,

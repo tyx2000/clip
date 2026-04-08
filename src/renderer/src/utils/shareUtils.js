@@ -1,37 +1,7 @@
-export function formatDuration(totalSeconds) {
-  const normalized = Math.max(0, Math.round(Number(totalSeconds) || 0))
-  const hours = Math.floor(normalized / 3600)
-  const minutes = Math.floor((normalized % 3600) / 60)
-  const seconds = normalized % 60
-
-  if (hours > 0) {
-    return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':')
-  }
-
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-}
-
 export function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
-}
-
-export function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return '0 B'
-  }
-
-  const units = ['B', 'KB', 'MB', 'GB']
-  let size = bytes
-  let unitIndex = 0
-
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024
-    unitIndex += 1
-  }
-
-  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
 }
 
 export function middleEllipsis(value, maxLength = 36) {
@@ -64,24 +34,6 @@ export function formatDateTime24(value) {
   const minutes = String(date.getMinutes()).padStart(2, '0')
   const seconds = String(date.getSeconds()).padStart(2, '0')
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
-}
-
-export function getPreferredRecorderMimeType() {
-  if (typeof window.MediaRecorder?.isTypeSupported !== 'function') {
-    return ''
-  }
-
-  const candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-  return candidates.find((mimeType) => window.MediaRecorder.isTypeSupported(mimeType)) || ''
-}
-
-export async function blobToDataUrl(blob) {
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result)
-    reader.onerror = () => reject(new Error('Failed to convert recording blob.'))
-    reader.readAsDataURL(blob)
-  })
 }
 
 export function isLikelyPermissionError(error) {
