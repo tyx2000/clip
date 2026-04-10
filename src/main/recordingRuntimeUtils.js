@@ -1,3 +1,4 @@
+/** 文件作用：提供录屏运行时的通用解析、归一化和默认值工具。 */
 import {
   CLOUD_SYNC_RETRY_DELAYS_MS,
   DEFAULT_CLOUD_SYNC_SERVER_URL,
@@ -5,6 +6,7 @@ import {
   MIN_SEGMENT_DURATION_MS
 } from './recordingPaths'
 
+/** 解析 data URL，提取 mime type 与二进制内容。 */
 export function parseDataUrl(dataUrl = '') {
   if (typeof dataUrl !== 'string') return null
 
@@ -23,6 +25,7 @@ export function parseDataUrl(dataUrl = '') {
   }
 }
 
+/** 把多种 chunk 载荷形式统一转换为 Buffer。 */
 export function parseChunkPayloadToBuffer(payload = {}) {
   if (Buffer.isBuffer(payload?.chunk)) {
     return payload.chunk
@@ -48,6 +51,7 @@ export function parseChunkPayloadToBuffer(payload = {}) {
   return parsed?.buffer || null
 }
 
+/** 归一化单段录制时长配置。 */
 export function normalizeSegmentDurationMs(value) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < MIN_SEGMENT_DURATION_MS) {
@@ -56,10 +60,12 @@ export function normalizeSegmentDurationMs(value) {
   return Math.floor(parsed)
 }
 
+/** 归一化云同步开关值。 */
 export function normalizeCloudSyncEnabled(value) {
   return value === true
 }
 
+/** 读取云同步服务地址，并移除末尾斜杠。 */
 export function getCloudSyncServerUrl(payload = {}) {
   const candidate =
     typeof payload?.cloudSyncServerUrl === 'string' && payload.cloudSyncServerUrl.trim()
@@ -68,6 +74,7 @@ export function getCloudSyncServerUrl(payload = {}) {
   return candidate.replace(/\/+$/, '')
 }
 
+/** 创建云同步状态的默认结构。 */
 export function createCloudSyncState({ enabled = false, serverUrl = '' } = {}) {
   return {
     enabled,
@@ -81,6 +88,7 @@ export function createCloudSyncState({ enabled = false, serverUrl = '' } = {}) {
   }
 }
 
+/** 归一化单个分段的云同步状态字段。 */
 export function normalizeSegmentCloudSyncState(segment = {}) {
   return {
     uploadStatus:
@@ -94,6 +102,7 @@ export function normalizeSegmentCloudSyncState(segment = {}) {
   }
 }
 
+/** 为从数据库恢复的会话状态补齐缺失字段。 */
 export function applyRecordingSessionStateDefaults(sessionState = {}) {
   const cloudSyncEnabled = normalizeCloudSyncEnabled(sessionState?.cloudSyncEnabled)
   const serverUrl = getCloudSyncServerUrl({
@@ -111,7 +120,7 @@ export function applyRecordingSessionStateDefaults(sessionState = {}) {
 
   return {
     ...sessionState,
-    version: Number(sessionState?.version || 1),
+    version: 2,
     cloudSyncEnabled,
     cloudSync,
     segments: Array.isArray(sessionState?.segments)
@@ -123,6 +132,7 @@ export function applyRecordingSessionStateDefaults(sessionState = {}) {
   }
 }
 
+/** 根据重试次数返回下一次云同步重试延迟。 */
 export function getCloudSyncRetryDelayMs(retryCount) {
   const normalized = Math.max(0, Number(retryCount || 0))
   return CLOUD_SYNC_RETRY_DELAYS_MS[Math.min(normalized, CLOUD_SYNC_RETRY_DELAYS_MS.length - 1)]

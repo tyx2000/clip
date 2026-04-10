@@ -1,10 +1,7 @@
-import { resolve } from 'path'
-import { DEFAULT_SEGMENT_DURATION_MS } from './recordingPaths'
+/** 文件作用：封装录屏相关的高层 SQLite 读写接口。 */
+import { resolve, sep } from 'path'
+import { DEFAULT_SEGMENT_DURATION_MS, getMimeTypeByExtension } from './recordingPaths'
 import { getRecordingMetadataDatabase, runDatabaseTransaction } from './recordingDbCore'
-export {
-  createRuntimeSessionFromCloudSyncDatabaseRecord,
-  createRuntimeSessionFromRecordingDatabaseRecord
-} from './recordingDbRuntime'
 
 const SESSION_SELECT = `
   SELECT
@@ -52,9 +49,7 @@ const SEGMENT_SELECT = `
   FROM recording_session_segments
 `
 
-/** Normalizes one joined metadata row into the shape consumed by the catalog layer.
- * @param {any} row Raw SQLite row.
- */
+/** 把录屏元数据查询结果归一化成目录层可消费的结构。 */
 function normalizeRecordingMetadataRecord(row) {
   if (!row || typeof row !== 'object') {
     return null
@@ -76,9 +71,140 @@ function normalizeRecordingMetadataRecord(row) {
   }
 }
 
-/** Reads duration and cloud-sync metadata for one finalized local output.
- * @param {string} filePath Absolute local output path.
- */
+/** 根据会话行和分段行恢复云同步状态摘要。 */
+function normalizeCloudSyncStateFromSessionRow(
+  sessionRow = {},
+  segmentRows = [],
+  createCloudSyncState
+) {
+  const enabled = Boolean(sessionRow?.cloudSyncEnabled)
+  const serverUrl = sessionRow?.cloudServerUrl || ''
+  const failedParts = segmentRows.filter((segment) => segment.uploadStatus === 'failed').length
+  const pendingParts = segmentRows.filter(
+    (segment) =>
+      segment.status === 'ready' &&
+      segment.uploadStatus !== 'uploaded' &&
+      segment.uploadStatus !== 'disabled'
+  ).length
+
+  let status = sessionRow?.cloudSyncStatus || (enabled ? 'pending' : 'disabled')
+  if (enabled && status === 'completed' && (pendingParts > 0 || failedParts > 0)) {
+    status = failedParts > 0 ? 'failed' : 'syncing'
+  }
+
+  return {
+    ...createCloudSyncState({ enabled, serverUrl }),
+    enabled,
+    serverUrl,
+    status,
+    remoteVideoUrl: sessionRow?.cloudRemoteVideoUrl || '',
+    lastError: sessionRow?.cloudLastError || '',
+    completedAt: Number(sessionRow?.cloudCompletedAt || 0) || null,
+    lastAttemptAt: Number(sessionRow?.cloudLastAttemptAt || 0) || null,
+    nextRetryAt: Number(sessionRow?.cloudNextRetryAt || 0) || null
+  }
+}
+
+/** 把数据库中的分段行归一化为内存中的分段结构。 */
+function normalizeSegments(segmentRows = []) {
+  return segmentRows.map((segment) => {
+    const filePath = segment.filePath ? resolve(segment.filePath) : ''
+    return {
+      index: Number(segment.index || 0),
+      fileName: filePath ? filePath.split(sep).pop() || '' : '',
+      path: filePath,
+      partialPath: segment.partialPath ? resolve(segment.partialPath) : '',
+      startedAt: Number(segment.startedAt || 0) || null,
+      endedAt: Number(segment.endedAt || 0) || null,
+      bytes: Number(segment.bytes || 0),
+      status: segment.status || 'ready',
+      uploadStatus: segment.uploadStatus || 'disabled',
+      checksum: segment.checksum || '',
+      etag: segment.etag || '',
+      uploadedAt: Number(segment.uploadedAt || 0) || null,
+      retryCount: Number(segment.retryCount || 0)
+    }
+  })
+}
+
+/** 将数据库记录组合成一个完整的运行时会话对象。 */
+function createSessionStateFromDatabaseRecord(
+  sessionRow,
+  segmentRows,
+  createCloudSyncState,
+  createRuntimeSession
+) {
+  const sessionId = String(sessionRow?.sessionId || '').trim()
+  if (!sessionId) {
+    return null
+  }
+
+  const normalizedSegments = normalizeSegments(segmentRows)
+  const extension = sessionRow.extension || 'webm'
+  const sessionState = {
+    version: 2,
+    sessionId,
+    sessionDir: sessionRow.sessionDir,
+    extension,
+    mimeType: sessionRow.mimeType || getMimeTypeByExtension(extension),
+    segmentDurationMs: Number(sessionRow.segmentDurationMs || DEFAULT_SEGMENT_DURATION_MS),
+    cloudSyncEnabled: Boolean(sessionRow.cloudSyncEnabled),
+    cloudSync: normalizeCloudSyncStateFromSessionRow(
+      sessionRow,
+      normalizedSegments,
+      createCloudSyncState
+    ),
+    status: sessionRow.status || 'interrupted',
+    startedAt: Number(sessionRow.startedAt || 0) || Date.now(),
+    stoppedAt: Number(sessionRow.stoppedAt || 0) || null,
+    updatedAt: Number(sessionRow.updatedAt || Date.now()),
+    totalBytes: Number(sessionRow.totalBytes || 0),
+    output: sessionRow.outputPath
+      ? {
+          path: resolve(sessionRow.outputPath),
+          status: sessionRow.outputStatus || 'pending',
+          bytes: Number(sessionRow.outputBytes || 0),
+          createdAt: Number(sessionRow.outputCreatedAt || 0),
+          durationSec: Number(sessionRow.outputDurationSec || 0) || null
+        }
+      : null,
+    segments: normalizedSegments
+  }
+
+  return createRuntimeSession(sessionState)
+}
+
+/** 从本地录屏数据库记录恢复运行时会话。 */
+export function createRuntimeSessionFromRecordingDatabaseRecord(
+  sessionRow,
+  segmentRows,
+  createRuntimeSession,
+  createCloudSyncState = () => ({ enabled: false, status: 'disabled' })
+) {
+  return createSessionStateFromDatabaseRecord(
+    sessionRow,
+    segmentRows,
+    createCloudSyncState,
+    createRuntimeSession
+  )
+}
+
+/** 从云同步数据库记录恢复运行时会话。 */
+export function createRuntimeSessionFromCloudSyncDatabaseRecord(
+  sessionRow,
+  segmentRows,
+  createCloudSyncState,
+  createRuntimeSession
+) {
+  return createSessionStateFromDatabaseRecord(
+    sessionRow,
+    segmentRows,
+    createCloudSyncState,
+    createRuntimeSession
+  )
+}
+
+/** 读取某个最终录屏文件的时长和云同步元数据。 */
 export function readRecordingMetadataFromDatabase(filePath) {
   const db = getRecordingMetadataDatabase()
   const row = db
@@ -98,10 +224,7 @@ export function readRecordingMetadataFromDatabase(filePath) {
   return normalizeRecordingMetadataRecord(row)
 }
 
-/** Upserts metadata for one finalized local output.
- * @param {string} filePath Absolute local output path.
- * @param {{durationSec?: number|null, cloudSync?: object|null}} metadata Metadata to persist.
- */
+/** 写入或更新某个最终录屏文件的元数据。 */
 export function writeRecordingMetadataToDatabase(filePath, metadata) {
   const db = getRecordingMetadataDatabase()
   const durationSec = Number(metadata?.durationSec || 0)
@@ -144,9 +267,7 @@ export function writeRecordingMetadataToDatabase(filePath, metadata) {
   })
 }
 
-/** Deletes metadata for a finalized local output after the file is removed.
- * @param {string} filePath Absolute local output path.
- */
+/** 在录屏文件删除后移除其元数据记录。 */
 export function deleteRecordingMetadataFromDatabase(filePath) {
   const db = getRecordingMetadataDatabase()
   const normalizedPath = resolve(filePath)
@@ -156,15 +277,7 @@ export function deleteRecordingMetadataFromDatabase(filePath) {
   })
 }
 
-/** Deprecated compatibility shim. Cloud sync now persists through recording_sessions only. */
-export function syncCloudSessionToDatabase() {}
-
-/** Deprecated compatibility shim. Cloud sync rows live in recording_sessions only. */
-export function deleteCloudSessionFromDatabase() {}
-
-/** Mirrors local session state and per-part rows into SQLite.
- * @param {object} runtimeSession Active or recovered runtime session.
- */
+/** 把当前运行时会话及其全部分段状态同步到 SQLite。 */
 export function syncRecordingSessionToDatabase(runtimeSession) {
   if (!runtimeSession?.id || !runtimeSession?.manifest) {
     return
@@ -298,6 +411,7 @@ export function syncRecordingSessionToDatabase(runtimeSession) {
   })
 }
 
+/** 删除某个会话在 SQLite 中的主记录和分段记录。 */
 export function deleteRecordingSessionFromDatabase(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return
@@ -310,6 +424,7 @@ export function deleteRecordingSessionFromDatabase(sessionId) {
   })
 }
 
+/** 列出所有开启云同步的会话记录。 */
 export function listCloudSyncSessionRowsFromDatabase() {
   const db = getRecordingMetadataDatabase()
   return db
@@ -323,10 +438,12 @@ export function listCloudSyncSessionRowsFromDatabase() {
     .all()
 }
 
+/** 读取单个云同步会话记录。 */
 export function readCloudSyncSessionRowsFromDatabase(sessionId) {
   return readRecordingSessionRowsFromDatabase(sessionId)
 }
 
+/** 列出所有本地录制会话记录。 */
 export function listLocalRecordingSessionRowsFromDatabase() {
   const db = getRecordingMetadataDatabase()
   return db
@@ -340,6 +457,7 @@ export function listLocalRecordingSessionRowsFromDatabase() {
     .all()
 }
 
+/** 按 sessionId 读取一条完整的会话记录及其分段记录。 */
 export function readRecordingSessionRowsFromDatabase(sessionId) {
   const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
   if (!normalizedSessionId) {

@@ -1,48 +1,24 @@
+/** 文件作用：Electron 主进程入口，负责初始化录屏能力、协议、IPC 与主窗口。 */
 import { app, BrowserWindow, desktopCapturer, session } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
-import { createRecordingHandlersRegistrar } from './recordingHandlers'
-import { createRecordingService } from './recordingService'
+import icon from '../../resources/3a65b18c3a85d213e62263b539fdf183_compress.jpg?asset'
 import {
-  createMainWindow,
-  createRecordingPlayerWindow,
-  getScreenCapturePermissionDetails,
-  listCaptureSources,
-  openScreenCaptureSettings,
-  registerRecordingMediaProtocol
-} from './recordingShell'
+  registerRecordingHandlers,
+  resolvePreferredRecordingDisplaySource
+} from './recordingHandlers'
+import { createRecordingService } from './recordingService'
+import { createMainWindow, registerRecordingMediaProtocol } from './recordingShell'
 
+/** 创建录屏服务实例，集中承载主进程的录屏业务能力。 */
 const recordingService = createRecordingService()
-const { registerRecordingHandlers, resolvePreferredDisplaySource } =
-  createRecordingHandlersRegistrar({
-    getActiveRecordingSession: recordingService.getActiveRecordingSession,
-    getRecordingSessionStatus: recordingService.getRecordingSessionStatus,
-    createRecordingSession: recordingService.createRecordingSession,
-    appendRecordingSessionChunk: recordingService.appendRecordingSessionChunk,
-    rotateRecordingSessionSegment: recordingService.rotateRecordingSessionSegment,
-    stopRecordingSession: recordingService.stopRecordingSession,
-    cancelRecordingSession: recordingService.cancelRecordingSession,
-    listRecordingItems: recordingService.listRecordingItems,
-    saveRecordingFromDataUrl: recordingService.saveRecordingFromDataUrl,
-    retryCloudSyncSession: recordingService.retryCloudSyncSession,
-    resumeAllCloudSyncSessions: recordingService.resumeAllCloudSyncSessions,
-    getScreenCapturePermissionDetails,
-    openScreenCaptureSettings,
-    listCaptureSources,
-    isRecordingFilePath: recordingService.isRecordingFilePath,
-    createRecordingPlayerWindow,
-    deleteRecordingFile: recordingService.deleteRecordingFile,
-    getRuntimeSessionForCloudSync: recordingService.getRuntimeSessionForCloudSync,
-    clearCloudSyncWorker: recordingService.clearCloudSyncWorker,
-    cleanupRecordingSessionArtifacts: recordingService.cleanupRecordingSessionArtifacts,
-    baseDir: __dirname
-  })
 
+/** 应用准备完成后，初始化主进程录屏能力并启动主窗口。 */
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.electron.clip-recorder')
   registerRecordingMediaProtocol({ isRecordingFilePath: recordingService.isRecordingFilePath })
-  registerRecordingHandlers()
+  registerRecordingHandlers({ recordingService, baseDir: __dirname })
 
+  /** 拦截渲染进程的屏幕采集请求，并按偏好返回录制源。 */
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
     try {
       const sources = await desktopCapturer.getSources({
@@ -50,7 +26,7 @@ app.whenReady().then(async () => {
         thumbnailSize: { width: 0, height: 0 }
       })
 
-      const preferredSource = resolvePreferredDisplaySource(sources)
+      const preferredSource = resolvePreferredRecordingDisplaySource(sources)
       if (!preferredSource) {
         callback({})
         return
@@ -65,6 +41,7 @@ app.whenReady().then(async () => {
     }
   })
 
+  /** 为新创建的窗口附加开发辅助快捷键。 */
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
@@ -79,6 +56,7 @@ app.whenReady().then(async () => {
     baseDir: __dirname
   })
 
+  /** 在 macOS 上重新激活应用时补建主窗口。 */
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow({
@@ -89,6 +67,7 @@ app.whenReady().then(async () => {
   })
 })
 
+/** 在非 macOS 平台关闭最后一个窗口后退出应用。 */
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()

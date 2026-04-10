@@ -1,3 +1,4 @@
+/** 文件作用：封装主进程窗口创建、录屏协议访问和屏幕源/权限相关能力。 */
 import { BrowserWindow, desktopCapturer, protocol, shell, systemPreferences } from 'electron'
 import { createReadStream, existsSync } from 'fs'
 import { stat } from 'fs/promises'
@@ -6,10 +7,12 @@ import { Readable } from 'node:stream'
 import { is } from '@electron-toolkit/utils'
 import { RECORDING_MEDIA_SCHEME } from './recordingPaths'
 
+/** 将本地媒体路径转换为 renderer 可访问的 recording:// URL。 */
 export function toRecordingMediaUrl(filePath) {
   return `${RECORDING_MEDIA_SCHEME}://media/${encodeURIComponent(filePath)}`
 }
 
+/** 解析 recording:// 请求地址并还原成真实文件路径。 */
 function parseRecordingMediaRequestUrl(urlText) {
   try {
     const parsed = new URL(urlText)
@@ -28,6 +31,7 @@ function parseRecordingMediaRequestUrl(urlText) {
   }
 }
 
+/** 根据文件扩展名返回协议响应所需的 Content-Type。 */
 function getMediaContentType(filePath) {
   const ext = extname(filePath).toLowerCase()
   if (ext === '.webm') return 'video/webm'
@@ -38,6 +42,7 @@ function getMediaContentType(filePath) {
   return 'application/octet-stream'
 }
 
+/** 解析 HTTP Range 头，支持播放器按字节范围读取。 */
 function parseRangeHeader(rangeValue, fileSize) {
   if (!rangeValue || typeof rangeValue !== 'string') {
     return null
@@ -75,6 +80,7 @@ function parseRangeHeader(rangeValue, fileSize) {
   return { start, end }
 }
 
+/** 将 Electron 的桌面源对象映射成 renderer 友好的结构。 */
 function mapCaptureSourceItem(source) {
   return {
     id: source.id,
@@ -85,6 +91,7 @@ function mapCaptureSourceItem(source) {
   }
 }
 
+/** 获取当前可供录制的屏幕和窗口源列表。 */
 export async function listCaptureSources() {
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],
@@ -99,6 +106,7 @@ export async function listCaptureSources() {
   return mapped
 }
 
+/** 读取系统层面的屏幕采集权限状态。 */
 export function getScreenCapturePermissionDetails() {
   let status = 'unknown'
 
@@ -125,6 +133,7 @@ export function getScreenCapturePermissionDetails() {
   }
 }
 
+/** 打开系统隐私设置中的屏幕录制授权页。 */
 export async function openScreenCaptureSettings() {
   if (process.platform !== 'darwin') {
     return {
@@ -146,6 +155,7 @@ export async function openScreenCaptureSettings() {
   return { ok: true }
 }
 
+/** 根据偏好 id 从桌面源列表中选出最终录制源。 */
 export function resolvePreferredDisplaySource(sources, preferredDisplaySourceId = '') {
   return (
     sources.find((source) => source.id === preferredDisplaySourceId) ||
@@ -155,6 +165,7 @@ export function resolvePreferredDisplaySource(sources, preferredDisplaySourceId 
   )
 }
 
+/** 创建主应用窗口。 */
 export function createMainWindow({ iconPath, baseDir }) {
   const window = new BrowserWindow({
     width: 1200,
@@ -189,6 +200,7 @@ export function createMainWindow({ iconPath, baseDir }) {
   return window
 }
 
+/** 注册 recording:// 媒体协议，用于安全暴露本地录屏文件。 */
 export function registerRecordingMediaProtocol({ isRecordingFilePath }) {
   protocol.handle(RECORDING_MEDIA_SCHEME, async (request) => {
     const filePath = parseRecordingMediaRequestUrl(request.url)
@@ -258,6 +270,7 @@ export function registerRecordingMediaProtocol({ isRecordingFilePath }) {
   })
 }
 
+/** 创建独立的录屏播放窗口。 */
 export function createRecordingPlayerWindow({ filePath, baseDir }) {
   const playerWindow = new BrowserWindow({
     width: 1080,

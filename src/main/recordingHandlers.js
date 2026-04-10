@@ -1,282 +1,282 @@
+/** 文件作用：注册主进程录屏 IPC，并把请求分发给录屏服务层。 */
 import { ipcMain, shell } from 'electron'
 import { existsSync } from 'fs'
 import { getPosterPathByVideoPath, getRecordingsDirectoryPath } from './recordingPaths'
-
-export function createRecordingHandlersRegistrar({
-  getActiveRecordingSession,
-  getRecordingSessionStatus,
-  createRecordingSession,
-  appendRecordingSessionChunk,
-  rotateRecordingSessionSegment,
-  stopRecordingSession,
-  cancelRecordingSession,
-  listRecordingItems,
-  saveRecordingFromDataUrl,
-  retryCloudSyncSession,
-  resumeAllCloudSyncSessions,
-  getScreenCapturePermissionDetails,
-  openScreenCaptureSettings,
-  listCaptureSources,
-  isRecordingFilePath,
+import {
   createRecordingPlayerWindow,
-  deleteRecordingFile,
-  getRuntimeSessionForCloudSync,
-  clearCloudSyncWorker,
-  cleanupRecordingSessionArtifacts,
-  baseDir
-}) {
-  let preferredDisplaySourceId = ''
+  getScreenCapturePermissionDetails,
+  listCaptureSources,
+  openScreenCaptureSettings,
+  resolvePreferredDisplaySource as resolvePreferredDisplaySourceById
+} from './recordingShell'
 
-  function resolvePreferredDisplaySource(sources) {
-    return (
-      sources.find((source) => source.id === preferredDisplaySourceId) ||
-      sources.find((source) => source.id.startsWith('screen:')) ||
-      sources[0] ||
-      null
-    )
-  }
+let preferredDisplaySourceId = ''
 
-  function registerSessionHandlers() {
-    ipcMain.handle('screen-recording:session-start', async (_, payload = {}) => {
-      try {
-        const runtimeSession = await createRecordingSession(payload)
-        return {
-          ok: true,
-          ...(await getRecordingSessionStatus(runtimeSession))
-        }
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to start recording session.'
-        }
-      }
-    })
+/** 根据记录的偏好录制源 id 选出最终录制源。 */
+export function resolvePreferredRecordingDisplaySource(sources) {
+  return resolvePreferredDisplaySourceById(sources, preferredDisplaySourceId)
+}
 
-    ipcMain.handle('screen-recording:session-append-chunk', async (_, payload = {}) => {
-      try {
-        return await appendRecordingSessionChunk(payload)
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to append recording chunk.'
-        }
-      }
-    })
+/** 一次性注册当前文件中的全部录屏 IPC。 */
+export function registerRecordingHandlers({ recordingService, baseDir }) {
+  const {
+    getActiveRecordingSession,
+    getRecordingSessionStatus,
+    createRecordingSession,
+    appendRecordingSessionChunk,
+    rotateRecordingSessionSegment,
+    stopRecordingSession,
+    cancelRecordingSession,
+    listRecordingItems,
+    saveRecordingFromDataUrl,
+    retryCloudSyncSession,
+    resumeAllCloudSyncSessions,
+    isRecordingFilePath,
+    deleteRecordingFile,
+    getRuntimeSessionForCloudSync,
+    clearCloudSyncWorker,
+    cleanupRecordingSessionArtifacts
+  } = recordingService
 
-    ipcMain.handle('screen-recording:session-rotate', async (_, payload = {}) => {
-      try {
-        return await rotateRecordingSessionSegment(payload)
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to rotate recording segment.'
-        }
-      }
-    })
-
-    ipcMain.handle('screen-recording:session-stop', async (_, payload = {}) => {
-      try {
-        return await stopRecordingSession(payload)
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to stop recording session.'
-        }
-      }
-    })
-
-    ipcMain.handle('screen-recording:session-cancel', async (_, payload = {}) => {
-      try {
-        return await cancelRecordingSession(payload)
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to cancel recording session.'
-        }
-      }
-    })
-
-    ipcMain.handle('screen-recording:session-status', (_, payload = {}) => {
-      return (async () => {
-        const runtimeSession = getActiveRecordingSession(payload?.sessionId)
-        if (!runtimeSession) {
-          return { ok: false, message: 'Recording session not found.' }
-        }
-        return {
-          ok: true,
-          ...(await getRecordingSessionStatus(runtimeSession))
-        }
-      })()
-    })
-  }
-
-  function registerLibraryHandlers() {
-    ipcMain.handle('screen-recording:save', async (_, payload = {}) => {
-      return await saveRecordingFromDataUrl(payload)
-    })
-
-    ipcMain.handle('screen-recording:list', async () => {
-      try {
-        const items = await listRecordingItems()
-        return { ok: true, items }
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to load recordings.'
-        }
-      }
-    })
-
-    ipcMain.handle('screen-recording:cloud-sync-retry', async (_, payload = {}) => {
-      try {
-        return await retryCloudSyncSession(payload)
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to retry cloud sync.'
-        }
-      }
-    })
-
-    ipcMain.handle('screen-recording:cloud-sync-resume-all', async () => {
-      try {
-        return await resumeAllCloudSyncSessions()
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to resume cloud sync sessions.'
-        }
-      }
-    })
-
-    ipcMain.handle('screen-recording:debug-access', async () => {
-      const recordingsDir = getRecordingsDirectoryPath()
-
-      try {
-        const items = await listRecordingItems()
-        const sample = items.slice(0, 8).map((item) => ({
-          name: item.name,
-          path: item.path,
-          posterPath: getPosterPathByVideoPath(item.path),
-          fileExists: existsSync(item.path),
-          posterExists: existsSync(getPosterPathByVideoPath(item.path)),
-          fileUrl: item.fileUrl,
-          posterUrl: item.posterUrl || ''
-        }))
-
-        return {
-          ok: true,
-          recordingsDir,
-          count: items.length,
-          sample
-        }
-      } catch (error) {
-        return {
-          ok: false,
-          recordingsDir,
-          message: error instanceof Error ? error.message : 'Debug access failed.'
-        }
-      }
-    })
-  }
-
-  function registerSystemHandlers() {
-    ipcMain.handle('screen-recording:permission-status', () => {
+  /** 响应功能：创建录屏会话并返回初始化后的状态信息。 */
+  ipcMain.handle('startScreenRecordingSession', async (_, payload = {}) => {
+    try {
+      const runtimeSession = await createRecordingSession(payload)
       return {
         ok: true,
-        ...getScreenCapturePermissionDetails()
+        ...(await getRecordingSessionStatus(runtimeSession))
       }
-    })
-
-    ipcMain.handle('screen-recording:open-permission-settings', async () => {
-      return openScreenCaptureSettings()
-    })
-
-    ipcMain.handle('screen-recording:get-sources', async () => {
-      try {
-        const sources = await listCaptureSources()
-        return { ok: true, sources }
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to load capture sources.'
-        }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to start recording session.'
       }
-    })
+    }
+  })
 
-    ipcMain.handle('screen-recording:set-source', (_, payload = {}) => {
-      const sourceId = typeof payload?.sourceId === 'string' ? payload.sourceId : ''
-      preferredDisplaySourceId = sourceId
-      return { ok: true, sourceId: preferredDisplaySourceId }
-    })
-  }
-
-  function registerFileHandlers() {
-    ipcMain.handle('screen-recording:open', async (_, payload = {}) => {
-      const filePath = typeof payload?.path === 'string' ? payload.path : ''
-      if (!isRecordingFilePath(filePath)) {
-        return { ok: false, message: 'Invalid recording path.' }
+  /** 响应功能：向现有录屏会话追加音视频分片。 */
+  ipcMain.handle('appendScreenRecordingChunk', async (_, payload = {}) => {
+    try {
+      return await appendRecordingSessionChunk(payload)
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to append recording chunk.'
       }
+    }
+  })
 
-      try {
-        createRecordingPlayerWindow({ filePath, baseDir })
-        return { ok: true }
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to open player window.'
-        }
+  /** 响应功能：轮转当前分片文件，切到新的录制片段。 */
+  ipcMain.handle('rotateScreenRecordingSegment', async (_, payload = {}) => {
+    try {
+      return await rotateRecordingSessionSegment(payload)
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to rotate recording segment.'
       }
-    })
+    }
+  })
 
-    ipcMain.handle('screen-recording:reveal', (_, payload = {}) => {
-      const filePath = typeof payload?.path === 'string' ? payload.path : ''
-      if (!isRecordingFilePath(filePath)) {
-        return { ok: false, message: 'Invalid recording path.' }
+  /** 响应功能：正常停止录屏会话并触发后处理。 */
+  ipcMain.handle('stopScreenRecordingSession', async (_, payload = {}) => {
+    try {
+      return await stopRecordingSession(payload)
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to stop recording session.'
       }
+    }
+  })
 
-      shell.showItemInFolder(filePath)
+  /** 响应功能：取消录屏会话并回收临时产物。 */
+  ipcMain.handle('cancelScreenRecordingSession', async (_, payload = {}) => {
+    try {
+      return await cancelRecordingSession(payload)
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to cancel recording session.'
+      }
+    }
+  })
+
+  /** 响应功能：按会话 id 查询实时录制状态。 */
+  ipcMain.handle('getScreenRecordingSessionStatus', (_, payload = {}) => {
+    return (async () => {
+      const runtimeSession = getActiveRecordingSession(payload?.sessionId)
+      if (!runtimeSession) {
+        return { ok: false, message: 'Recording session not found.' }
+      }
+      return {
+        ok: true,
+        ...(await getRecordingSessionStatus(runtimeSession))
+      }
+    })()
+  })
+
+  /** 响应功能：保存渲染进程传入的录屏数据到文件系统。 */
+  ipcMain.handle('saveScreenRecording', async (_, payload = {}) => {
+    return await saveRecordingFromDataUrl(payload)
+  })
+
+  /** 响应功能：读取并返回本地录屏条目列表。 */
+  ipcMain.handle('listScreenRecordings', async () => {
+    try {
+      const items = await listRecordingItems()
+      return { ok: true, items }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to load recordings.'
+      }
+    }
+  })
+
+  /** 响应功能：重试指定会话的云同步任务。 */
+  ipcMain.handle('retryCloudSyncSession', async (_, payload = {}) => {
+    try {
+      return await retryCloudSyncSession(payload)
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to retry cloud sync.'
+      }
+    }
+  })
+
+  /** 响应功能：恢复全部待处理的云同步会话。 */
+  ipcMain.handle('resumeAllCloudSyncSessions', async () => {
+    try {
+      return await resumeAllCloudSyncSessions()
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to resume cloud sync sessions.'
+      }
+    }
+  })
+
+  /** 响应功能：返回录屏目录与样本文件信息，便于排查访问问题。 */
+  ipcMain.handle('debugScreenRecordingAccess', async () => {
+    const recordingsDir = getRecordingsDirectoryPath()
+
+    try {
+      const items = await listRecordingItems()
+      const sample = items.slice(0, 8).map((item) => ({
+        name: item.name,
+        path: item.path,
+        posterPath: getPosterPathByVideoPath(item.path),
+        fileExists: existsSync(item.path),
+        posterExists: existsSync(getPosterPathByVideoPath(item.path)),
+        fileUrl: item.fileUrl,
+        posterUrl: item.posterUrl || ''
+      }))
+
+      return {
+        ok: true,
+        recordingsDir,
+        count: items.length,
+        sample
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        recordingsDir,
+        message: error instanceof Error ? error.message : 'Debug access failed.'
+      }
+    }
+  })
+
+  /** 响应功能：返回屏幕录制权限与系统能力状态。 */
+  ipcMain.handle('getScreenRecordingPermissionStatus', () => {
+    return {
+      ok: true,
+      ...getScreenCapturePermissionDetails()
+    }
+  })
+
+  /** 响应功能：跳转到系统录屏权限设置界面。 */
+  ipcMain.handle('openScreenRecordingPermissionSettings', async () => {
+    return openScreenCaptureSettings()
+  })
+
+  /** 响应功能：获取可用的桌面/窗口录制源。 */
+  ipcMain.handle('getScreenRecordingSources', async () => {
+    try {
+      const sources = await listCaptureSources()
+      return { ok: true, sources }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to load capture sources.'
+      }
+    }
+  })
+
+  /** 响应功能：保存用户选择的首选录制源 id。 */
+  ipcMain.handle('setScreenRecordingSource', (_, payload = {}) => {
+    const sourceId = typeof payload?.sourceId === 'string' ? payload.sourceId : ''
+    preferredDisplaySourceId = sourceId
+    return { ok: true, sourceId: preferredDisplaySourceId }
+  })
+
+  /** 响应功能：根据录屏路径打开播放器窗口。 */
+  ipcMain.handle('openScreenRecording', async (_, payload = {}) => {
+    const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    if (!isRecordingFilePath(filePath)) {
+      return { ok: false, message: 'Invalid recording path.' }
+    }
+
+    try {
+      createRecordingPlayerWindow({ filePath, baseDir })
       return { ok: true }
-    })
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to open player window.'
+      }
+    }
+  })
 
-    ipcMain.handle('screen-recording:delete', async (_, payload = {}) => {
-      const filePath = typeof payload?.path === 'string' ? payload.path : ''
-      const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
-      if (!isRecordingFilePath(filePath)) {
-        return { ok: false, message: 'Invalid recording path.' }
+  /** 响应功能：在系统文件管理器中高亮录屏文件。 */
+  ipcMain.handle('revealScreenRecording', (_, payload = {}) => {
+    const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    if (!isRecordingFilePath(filePath)) {
+      return { ok: false, message: 'Invalid recording path.' }
+    }
+
+    shell.showItemInFolder(filePath)
+    return { ok: true }
+  })
+
+  /** 响应功能：删除录屏文件并清理关联的云同步/会话资源。 */
+  ipcMain.handle('deleteScreenRecording', async (_, payload = {}) => {
+    const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
+    if (!isRecordingFilePath(filePath)) {
+      return { ok: false, message: 'Invalid recording path.' }
+    }
+
+    try {
+      const deleteResult = await deleteRecordingFile(filePath)
+      if (!deleteResult.ok) {
+        return deleteResult
       }
 
-      try {
-        const deleteResult = await deleteRecordingFile(filePath)
-        if (!deleteResult.ok) {
-          return deleteResult
-        }
-
-        const runtimeSession = sessionId ? await getRuntimeSessionForCloudSync({ sessionId }) : null
-        if (runtimeSession) {
-          clearCloudSyncWorker(runtimeSession.id)
-          await cleanupRecordingSessionArtifacts(runtimeSession)
-        }
-
-        return { ok: true }
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : 'Failed to delete recording.'
-        }
+      const runtimeSession = sessionId ? await getRuntimeSessionForCloudSync({ sessionId }) : null
+      if (runtimeSession) {
+        clearCloudSyncWorker(runtimeSession.id)
+        await cleanupRecordingSessionArtifacts(runtimeSession)
       }
-    })
-  }
 
-  function registerRecordingHandlers() {
-    registerSessionHandlers()
-    registerLibraryHandlers()
-    registerSystemHandlers()
-    registerFileHandlers()
-  }
-
-  return {
-    registerRecordingHandlers,
-    resolvePreferredDisplaySource
-  }
+      return { ok: true }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to delete recording.'
+      }
+    }
+  })
 }
