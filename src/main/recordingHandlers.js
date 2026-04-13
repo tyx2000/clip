@@ -2,14 +2,34 @@
 import { ipcMain, shell } from 'electron'
 import { existsSync } from 'fs'
 import {
+  clearCloudSyncWorker,
+  createRecordingSession,
+  getActiveRecordingSession,
+  getRuntimeSessionForCloudSync,
+  resumeAllCloudSyncSessions,
+  retryCloudSyncSession,
+  stopRecordingSession,
+  cancelRecordingSession,
+  appendRecordingSessionChunk,
+  rotateRecordingSessionSegment
+} from './recordingService'
+import { cleanupRecordingSessionArtifacts } from './recordingFinalizer'
+import {
   createRecordingPlayerWindow,
   getPosterPathByVideoPath,
   getRecordingsDirectoryPath,
+  isRecordingFilePath,
   getScreenCapturePermissionDetails,
   listCaptureSources,
   openScreenCaptureSettings,
   resolvePreferredDisplaySource
 } from './mediaUtils'
+import {
+  deleteRecordingFile,
+  getRecordingSessionStatus,
+  listRecordingItems,
+  saveRecordingFromDataUrl
+} from './recordingStorage'
 
 let preferredDisplaySourceId = ''
 
@@ -19,26 +39,7 @@ export function resolvePreferredRecordingDisplaySource(sources) {
 }
 
 /** 一次性注册当前文件中的全部录屏 IPC。 */
-export function registerRecordingHandlers({ recordingService, baseDir }) {
-  const {
-    getActiveRecordingSession,
-    getRecordingSessionStatus,
-    createRecordingSession,
-    appendRecordingSessionChunk,
-    rotateRecordingSessionSegment,
-    stopRecordingSession,
-    cancelRecordingSession,
-    listRecordingItems,
-    saveRecordingFromDataUrl,
-    retryCloudSyncSession,
-    resumeAllCloudSyncSessions,
-    isRecordingFilePath,
-    deleteRecordingFile,
-    getRuntimeSessionForCloudSync,
-    clearCloudSyncWorker,
-    cleanupRecordingSessionArtifacts
-  } = recordingService
-
+export function registerRecordingHandlers() {
   /** 响应功能：创建录屏会话并返回初始化后的状态信息。 */
   ipcMain.handle('startScreenRecordingSession', async (_, payload = {}) => {
     try {
@@ -231,7 +232,7 @@ export function registerRecordingHandlers({ recordingService, baseDir }) {
     }
 
     try {
-      createRecordingPlayerWindow({ filePath, baseDir })
+      createRecordingPlayerWindow({ filePath })
       return { ok: true }
     } catch (error) {
       return {

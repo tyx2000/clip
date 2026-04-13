@@ -696,17 +696,6 @@ export function buildCloudSyncMetadata(runtimeSession) {
   }
 }
 
-/** 判断一个路径是否位于录屏输出目录内。 */
-export function isRecordingFilePath(filePath) {
-  if (typeof filePath !== 'string' || !filePath.trim()) {
-    return false
-  }
-
-  const recordingsRoot = `${resolve(getRecordingsDirectoryPath())}${sep}`
-  const targetPath = resolve(filePath)
-  return `${targetPath}${sep}`.startsWith(recordingsRoot)
-}
-
 /** 根据文件状态和附加元数据组装列表项。 */
 export async function buildRecordingItem(filePath, fileStat) {
   const metadata = await readRecordingMetadata(filePath)

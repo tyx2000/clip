@@ -6,17 +6,14 @@ import {
   registerRecordingHandlers,
   resolvePreferredRecordingDisplaySource
 } from './recordingHandlers'
-import { createRecordingService } from './recordingService'
 import { createMainWindow, registerRecordingMediaProtocol } from './mediaUtils'
-
-/** 创建录屏服务实例，集中承载主进程的录屏业务能力。 */
-const recordingService = createRecordingService()
+import { recoverPendingRecordingSessions } from './recordingService'
 
 /** 应用准备完成后，初始化主进程录屏能力并启动主窗口。 */
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.electron.clip-recorder')
-  registerRecordingMediaProtocol({ isRecordingFilePath: recordingService.isRecordingFilePath })
-  registerRecordingHandlers({ recordingService, baseDir: __dirname })
+  registerRecordingMediaProtocol()
+  registerRecordingHandlers()
 
   /** 拦截渲染进程的屏幕采集请求，并按偏好返回录制源。 */
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
@@ -46,22 +43,20 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  const recoverySummary = await recordingService.recoverPendingRecordingSessions()
+  const recoverySummary = await recoverPendingRecordingSessions()
   if (recoverySummary.recovered || recoverySummary.failed) {
     console.info('[recording] recovery summary:', recoverySummary)
   }
 
   createMainWindow({
-    iconPath: process.platform === 'linux' ? icon : undefined,
-    baseDir: __dirname
+    iconPath: process.platform === 'linux' ? icon : undefined
   })
 
   /** 在 macOS 上重新激活应用时补建主窗口。 */
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow({
-        iconPath: process.platform === 'linux' ? icon : undefined,
-        baseDir: __dirname
+        iconPath: process.platform === 'linux' ? icon : undefined
       })
     }
   })

@@ -2,11 +2,12 @@
 import ffmpegPath from 'ffmpeg-static'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, desktopCapturer, protocol, shell, systemPreferences } from 'electron'
 import { createReadStream, existsSync } from 'fs'
 import { readFile, readdir, stat } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
-import { extname, join, sep } from 'path'
+import { dirname, extname, join, resolve, sep } from 'path'
 import { Readable } from 'node:stream'
 
 /** 可被视为最终录屏输出文件的视频扩展名集合。 */
@@ -34,9 +35,24 @@ export const DEFAULT_CLOUD_SYNC_SERVER_URL = 'http://127.0.0.1:8787'
 /** 云同步上传与重试流程使用的退避时间表。 */
 export const CLOUD_SYNC_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 30_000, 60_000]
 
+const MAIN_ENTRY_DIR = dirname(fileURLToPath(import.meta.url))
+const PRELOAD_ENTRY_PATH = join(MAIN_ENTRY_DIR, '../preload/index.js')
+const RENDERER_ENTRY_PATH = join(MAIN_ENTRY_DIR, '../renderer/index.html')
+
 /** 返回录屏输出根目录。 */
 export function getRecordingsDirectoryPath() {
   return join(app.getPath('downloads'), 'Recording')
+}
+
+/** 判断一个路径是否位于录屏输出目录内。 */
+export function isRecordingFilePath(filePath) {
+  if (typeof filePath !== 'string' || !filePath.trim()) {
+    return false
+  }
+
+  const recordingsRoot = `${resolve(getRecordingsDirectoryPath())}${sep}`
+  const targetPath = resolve(filePath)
+  return `${targetPath}${sep}`.startsWith(recordingsRoot)
 }
 
 /** 将时间戳格式化为适合文件命名的稳定文本。 */
@@ -270,7 +286,7 @@ export function resolvePreferredDisplaySource(sources, preferredDisplaySourceId 
 }
 
 /** 创建主应用窗口。 */
-export function createMainWindow({ iconPath, baseDir }) {
+export function createMainWindow({ iconPath } = {}) {
   const window = new BrowserWindow({
     width: 1200,
     height: 760,
@@ -281,7 +297,7 @@ export function createMainWindow({ iconPath, baseDir }) {
     title: 'Clip Recorder',
     ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
-      preload: join(baseDir, '../preload/index.js'),
+      preload: PRELOAD_ENTRY_PATH,
       sandbox: false
     }
   })
@@ -298,14 +314,14 @@ export function createMainWindow({ iconPath, baseDir }) {
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     window.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    window.loadFile(join(baseDir, '../renderer/index.html'))
+    window.loadFile(RENDERER_ENTRY_PATH)
   }
 
   return window
 }
 
 /** 注册 recording:// 媒体协议，用于安全暴露本地录屏文件。 */
-export function registerRecordingMediaProtocol({ isRecordingFilePath }) {
+export function registerRecordingMediaProtocol() {
   protocol.handle(RECORDING_MEDIA_SCHEME, async (request) => {
     const filePath = parseRecordingMediaRequestUrl(request.url)
     if (!filePath || !isRecordingFilePath(filePath)) {
@@ -375,7 +391,7 @@ export function registerRecordingMediaProtocol({ isRecordingFilePath }) {
 }
 
 /** 创建独立的录屏播放窗口。 */
-export function createRecordingPlayerWindow({ filePath, baseDir }) {
+export function createRecordingPlayerWindow({ filePath }) {
   const playerWindow = new BrowserWindow({
     width: 1080,
     height: 720,
@@ -384,7 +400,7 @@ export function createRecordingPlayerWindow({ filePath, baseDir }) {
     autoHideMenuBar: true,
     title: `录制回放 - ${filePath.split(sep).pop() || ''}`,
     webPreferences: {
-      preload: join(baseDir, '../preload/index.js'),
+      preload: PRELOAD_ENTRY_PATH,
       sandbox: false
     }
   })
@@ -409,7 +425,7 @@ export function createRecordingPlayerWindow({ filePath, baseDir }) {
     }).toString()
     playerWindow.loadURL(`${base}?${query}`)
   } else {
-    playerWindow.loadFile(join(baseDir, '../renderer/index.html'), {
+    playerWindow.loadFile(RENDERER_ENTRY_PATH, {
       query: {
         player: videoUrl,
         name: displayName
