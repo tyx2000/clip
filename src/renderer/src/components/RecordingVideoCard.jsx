@@ -271,12 +271,9 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
       </PreviewWrap>
       <MetaRow>
         <MetaLine>
-          {formatDateTime24(item.createdAt)} ? {formatBytes(item.bytes)}
+          {formatDateTime24(item.createdAt)} - {formatBytes(item.bytes)}
           {cloudSync?.enabled ? (
-            <>
-              {' ? '}
-              <SyncMeta $failed={Number(cloudSync.failedParts || 0) > 0}>{cloudSyncLabel}</SyncMeta>
-            </>
+            <SyncMeta $failed={Number(cloudSync.failedParts || 0) > 0}>{cloudSyncLabel}</SyncMeta>
           ) : null}
         </MetaLine>
         {displayDurationSec > 0 ? (

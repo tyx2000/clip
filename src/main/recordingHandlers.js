@@ -31,6 +31,8 @@ import {
   saveRecordingFromDataUrl
 } from './recordingStorage'
 
+// 这里只保留“用户首选录制源 id”这一份轻量状态。
+// 目的是让 displayMedia 请求和 IPC 设置源之间共享同一个偏好值。
 let preferredDisplaySourceId = ''
 
 /** 根据记录的偏好录制源 id 选出最终录制源。 */
@@ -43,6 +45,7 @@ export function registerRecordingHandlers() {
   /** 响应功能：创建录屏会话并返回初始化后的状态信息。 */
   ipcMain.handle('startScreenRecordingSession', async (_, payload = {}) => {
     try {
+      // create 后立刻返回完整状态，避免渲染层再多发一次状态查询 IPC。
       const runtimeSession = await createRecordingSession(payload)
       return {
         ok: true,
@@ -109,6 +112,7 @@ export function registerRecordingHandlers() {
     return (async () => {
       const runtimeSession = getActiveRecordingSession(payload?.sessionId)
       if (!runtimeSession) {
+        // 这里不抛异常而是返回 ok:false，目的是让轮询状态的前端处理更稳定。
         return { ok: false, message: 'Recording session not found.' }
       }
       return {
@@ -162,10 +166,12 @@ export function registerRecordingHandlers() {
 
   /** 响应功能：返回录屏目录与样本文件信息，便于排查访问问题。 */
   ipcMain.handle('debugScreenRecordingAccess', async () => {
+    // recordingsDir 单独返回，是为了让前端调试时能直接看到实际落盘目录。
     const recordingsDir = getRecordingsDirectoryPath()
 
     try {
       const items = await listRecordingItems()
+      // 只截取少量样本，避免调试接口一次把大量文件信息都传回 renderer。
       const sample = items.slice(0, 8).map((item) => ({
         name: item.name,
         path: item.path,
@@ -219,6 +225,7 @@ export function registerRecordingHandlers() {
 
   /** 响应功能：保存用户选择的首选录制源 id。 */
   ipcMain.handle('setScreenRecordingSource', (_, payload = {}) => {
+    // 这里只接受字符串，避免把异常 payload 写进全局偏好状态。
     const sourceId = typeof payload?.sourceId === 'string' ? payload.sourceId : ''
     preferredDisplaySourceId = sourceId
     return { ok: true, sourceId: preferredDisplaySourceId }
@@ -228,6 +235,7 @@ export function registerRecordingHandlers() {
   ipcMain.handle('openScreenRecording', async (_, payload = {}) => {
     const filePath = typeof payload?.path === 'string' ? payload.path : ''
     if (!isRecordingFilePath(filePath)) {
+      // 路径校验放在最前面，是为了阻断任意文件路径被传入播放器窗口。
       return { ok: false, message: 'Invalid recording path.' }
     }
 
@@ -249,6 +257,7 @@ export function registerRecordingHandlers() {
       return { ok: false, message: 'Invalid recording path.' }
     }
 
+    // 这里不自己实现打开目录逻辑，直接交给系统文件管理器，兼容性更稳定。
     shell.showItemInFolder(filePath)
     return { ok: true }
   })
@@ -267,6 +276,7 @@ export function registerRecordingHandlers() {
         return deleteResult
       }
 
+      // 如果前端同时带了 sessionId，这里顺手把关联的恢复态会话和云同步 worker 也清掉。
       const runtimeSession = sessionId ? await getRuntimeSessionForCloudSync({ sessionId }) : null
       if (runtimeSession) {
         clearCloudSyncWorker(runtimeSession.id)
