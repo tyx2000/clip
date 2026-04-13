@@ -7,7 +7,7 @@ import {
   resolvePreferredRecordingDisplaySource
 } from './recordingHandlers'
 import { createRecordingService } from './recordingService'
-import { createMainWindow, registerRecordingMediaProtocol } from './recordingShell'
+import { createMainWindow, registerRecordingMediaProtocol } from './mediaUtils'
 
 /** 创建录屏服务实例，集中承载主进程的录屏业务能力。 */
 const recordingService = createRecordingService()

@@ -5,18 +5,21 @@ import { dirname, join } from 'path'
 import {
   createRecordingCaptureTempFileName,
   createRecordingFileName,
-  getRecordingsDirectoryPath
-} from './recordingPaths'
+  getRecordingsDirectoryPath,
+  listSessionArtifactPaths,
+  probeVideoDurationSec,
+  runFfmpeg
+} from './mediaUtils'
+import {
+  buildCloudSyncMetadata,
+  buildRecordingItem,
+  deleteRecordingSessionFromDatabase,
+  persistRecordingSessionState,
+  writeRecordingMetadata
+} from './recordingStorage'
 
 /** 在最终输出文件落盘后回填 output 元数据并生成列表项。 */
-async function writeRecordingOutput(deps, runtimeSession, outputFilePath) {
-  const {
-    persistRecordingSessionState,
-    buildCloudSyncMetadata,
-    probeVideoDurationSec,
-    buildRecordingItem,
-    writeRecordingMetadata
-  } = deps
+async function writeRecordingOutput(runtimeSession, outputFilePath) {
   const outputStat = await stat(outputFilePath)
   const durationSec = await probeVideoDurationSec(outputFilePath)
   runtimeSession.manifest.output = {
@@ -40,9 +43,7 @@ async function writeRecordingOutput(deps, runtimeSession, outputFilePath) {
 }
 
 /** 删除一个会话目录及其数据库记录。 */
-export async function cleanupRecordingSessionArtifacts(deps, runtimeSession) {
-  const { listSessionArtifactPaths, deleteRecordingSessionFromDatabase } = deps
-
+export async function cleanupRecordingSessionArtifacts(runtimeSession) {
   if (!runtimeSession?.dir) {
     return
   }
@@ -82,9 +83,7 @@ export async function cleanupRecordingSessionArtifacts(deps, runtimeSession) {
 }
 
 /** 把会话中的现有分段或连续录制文件合并成最终成片。 */
-export async function mergeRecordingSession(deps, runtimeSession) {
-  const { runFfmpeg } = deps
-
+export async function mergeRecordingSession(runtimeSession) {
   if (runtimeSession.manifest.cloudSyncEnabled) {
     const captureTempPath =
       runtimeSession.captureTempPath ||
@@ -105,7 +104,7 @@ export async function mergeRecordingSession(deps, runtimeSession) {
     await rename(captureTempPath, outputFilePath)
     runtimeSession.captureTempPath = ''
 
-    return await writeRecordingOutput(deps, runtimeSession, outputFilePath)
+    return await writeRecordingOutput(runtimeSession, outputFilePath)
   }
 
   const readySegments = runtimeSession.manifest.segments.filter(
@@ -159,5 +158,5 @@ export async function mergeRecordingSession(deps, runtimeSession) {
     }
   }
 
-  return await writeRecordingOutput(deps, runtimeSession, outputFilePath)
+  return await writeRecordingOutput(runtimeSession, outputFilePath)
 }

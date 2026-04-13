@@ -8,11 +8,49 @@ import {
   createRecordingCaptureTempFileName,
   createRecordingSegmentFileName,
   DEFAULT_CLOUD_SYNC_PART_SIZE_BYTES
-} from './recordingPaths'
+} from './mediaUtils'
+import { scheduleCloudSyncProcessing } from './cloudSyncRuntime'
+import { persistRecordingSessionState } from './recordingStorage'
+
+function parseChunkPayloadToBuffer(payload = {}) {
+  if (Buffer.isBuffer(payload?.chunk)) {
+    return payload.chunk
+  }
+
+  if (payload?.chunk instanceof Uint8Array) {
+    return Buffer.from(payload.chunk)
+  }
+
+  if (payload?.chunk instanceof ArrayBuffer) {
+    return Buffer.from(payload.chunk)
+  }
+
+  if (ArrayBuffer.isView(payload?.chunk)) {
+    return Buffer.from(payload.chunk.buffer, payload.chunk.byteOffset, payload.chunk.byteLength)
+  }
+
+  if (typeof payload?.chunkBase64 === 'string' && payload.chunkBase64.trim()) {
+    return Buffer.from(payload.chunkBase64, 'base64')
+  }
+
+  if (typeof payload?.dataUrl !== 'string') {
+    return null
+  }
+
+  const matched = payload.dataUrl.match(/^data:([^;,]+)(?:;[^,]*)?;base64,(.+)$/)
+  if (!matched) {
+    return null
+  }
+
+  try {
+    return Buffer.from(matched[2], 'base64')
+  } catch {
+    return null
+  }
+}
 
 /** 打开当前会话的下一个可写目标文件。 */
-export async function openRecordingSessionSegment(deps, runtimeSession, index) {
-  const { persistRecordingSessionState } = deps
+export async function openRecordingSessionSegment(runtimeSession, index) {
   const fileName = runtimeSession.manifest.cloudSyncEnabled
     ? createCloudSyncPartFileName(index)
     : createRecordingSegmentFileName(index, runtimeSession.manifest.extension)
@@ -69,8 +107,7 @@ export async function openRecordingSessionSegment(deps, runtimeSession, index) {
 }
 
 /** 封存当前正在写入的分段或上传分片。 */
-export async function finalizeCurrentRecordingSessionSegment(deps, runtimeSession) {
-  const { persistRecordingSessionState, scheduleCloudSyncProcessing } = deps
+export async function finalizeCurrentRecordingSessionSegment(cloudSyncWorkers, runtimeSession) {
   const currentSegment = runtimeSession.currentSegment
   const currentWriteStream = runtimeSession.manifest.cloudSyncEnabled
     ? runtimeSession.partWriteStream
@@ -110,15 +147,12 @@ export async function finalizeCurrentRecordingSessionSegment(deps, runtimeSessio
   await persistRecordingSessionState(runtimeSession)
 
   if (runtimeSession.manifest.cloudSyncEnabled && segmentItem) {
-    scheduleCloudSyncProcessing(runtimeSession)
+    scheduleCloudSyncProcessing(cloudSyncWorkers, runtimeSession)
   }
 }
 
 /** 把一个渲染进程 chunk 写入当前分段，必要时触发自动封段。 */
-export async function appendRecordingSessionChunk(deps, runtimeSession, payload = {}) {
-  const { persistRecordingSessionState, scheduleCloudSyncProcessing, parseChunkPayloadToBuffer } =
-    deps
-
+export async function appendRecordingSessionChunk(cloudSyncWorkers, runtimeSession, payload = {}) {
   if (!runtimeSession) {
     throw new Error('Recording session not found.')
   }
@@ -167,12 +201,9 @@ export async function appendRecordingSessionChunk(deps, runtimeSession, payload 
     runtimeSession.manifest.cloudSyncEnabled &&
     currentSegment.bytes >= DEFAULT_CLOUD_SYNC_PART_SIZE_BYTES
   ) {
-    await finalizeCurrentRecordingSessionSegment(
-      { persistRecordingSessionState, scheduleCloudSyncProcessing },
-      runtimeSession
-    )
+    await finalizeCurrentRecordingSessionSegment(cloudSyncWorkers, runtimeSession)
     const nextIndex = runtimeSession.manifest.segments.length + 1
-    await openRecordingSessionSegment({ persistRecordingSessionState }, runtimeSession, nextIndex)
+    await openRecordingSessionSegment(runtimeSession, nextIndex)
   }
 
   await persistRecordingSessionState(runtimeSession)
@@ -184,9 +215,7 @@ export async function appendRecordingSessionChunk(deps, runtimeSession, payload 
 }
 
 /** 显式轮转到下一段或下一片。 */
-export async function rotateRecordingSessionSegment(deps, runtimeSession) {
-  const { persistRecordingSessionState, scheduleCloudSyncProcessing } = deps
-
+export async function rotateRecordingSessionSegment(cloudSyncWorkers, runtimeSession) {
   if (!runtimeSession) {
     throw new Error('Recording session not found.')
   }
@@ -195,12 +224,9 @@ export async function rotateRecordingSessionSegment(deps, runtimeSession) {
     throw new Error('Recording session is not recording.')
   }
 
-  await finalizeCurrentRecordingSessionSegment(
-    { persistRecordingSessionState, scheduleCloudSyncProcessing },
-    runtimeSession
-  )
+  await finalizeCurrentRecordingSessionSegment(cloudSyncWorkers, runtimeSession)
   const nextIndex = runtimeSession.manifest.segments.length + 1
-  await openRecordingSessionSegment({ persistRecordingSessionState }, runtimeSession, nextIndex)
+  await openRecordingSessionSegment(runtimeSession, nextIndex)
 
   return { ok: true }
 }

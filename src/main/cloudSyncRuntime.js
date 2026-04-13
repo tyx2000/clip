@@ -1,6 +1,13 @@
 /** 文件作用：负责录屏云同步的后台上传、合并请求和重试调度。 */
 import { existsSync } from 'fs'
 import { readFile } from 'fs/promises'
+import { CLOUD_SYNC_RETRY_DELAYS_MS, sha256File } from './mediaUtils'
+import { cleanupRecordingSessionArtifacts } from './recordingFinalizer'
+import {
+  buildCloudSyncMetadata,
+  persistRecordingSessionState,
+  writeRecordingMetadata
+} from './recordingStorage'
 
 /** 解析云同步接口返回的 JSON 响应。 */
 async function parseJsonResponse(response) {
@@ -74,6 +81,13 @@ function setCloudSyncStatus(runtimeSession, status, extra = {}) {
   Object.assign(runtimeSession.manifest.cloudSync, extra)
 }
 
+function getCloudSyncRetryDelayMs(retryCount) {
+  const normalizedRetryCount = Math.max(0, Number(retryCount || 0))
+  return CLOUD_SYNC_RETRY_DELAYS_MS[
+    Math.min(normalizedRetryCount, CLOUD_SYNC_RETRY_DELAYS_MS.length - 1)
+  ]
+}
+
 /** 停止并清理某个会话的云同步 worker。 */
 export function clearCloudSyncWorker(cloudSyncWorkers, sessionId) {
   const worker = cloudSyncWorkers.get(sessionId)
@@ -89,9 +103,7 @@ export function clearCloudSyncWorker(cloudSyncWorkers, sessionId) {
 }
 
 /** 上传一个已完成的分片文件到云同步服务。 */
-async function uploadCloudSyncPart(deps, runtimeSession, part) {
-  const { getCloudSyncRetryDelayMs, persistRecordingSessionState, sha256File } = deps
-
+async function uploadCloudSyncPart(runtimeSession, part) {
   if (!runtimeSession.manifest.cloudSyncEnabled || !part?.path || !existsSync(part.path)) {
     return
   }
@@ -152,15 +164,7 @@ async function uploadCloudSyncPart(deps, runtimeSession, part) {
 }
 
 /** 请求服务端把当前会话的所有已上传分片合并成远端成片。 */
-async function mergeCloudSyncRecordingSession(deps, cloudSyncWorkers, runtimeSession) {
-  const {
-    getCloudSyncRetryDelayMs,
-    persistRecordingSessionState,
-    buildCloudSyncMetadata,
-    writeRecordingMetadata,
-    cleanupRecordingSessionArtifacts
-  } = deps
-
+async function mergeCloudSyncRecordingSession(cloudSyncWorkers, runtimeSession) {
   if (!runtimeSession.manifest.cloudSyncEnabled) {
     return false
   }
@@ -227,9 +231,7 @@ async function mergeCloudSyncRecordingSession(deps, cloudSyncWorkers, runtimeSes
 }
 
 /** 执行一次完整的云同步处理周期。 */
-async function processCloudSyncSession(deps, cloudSyncWorkers, runtimeSession) {
-  const { getCloudSyncRetryDelayMs } = deps
-
+async function processCloudSyncSession(cloudSyncWorkers, runtimeSession) {
   if (!runtimeSession.manifest.cloudSyncEnabled) {
     clearCloudSyncWorker(cloudSyncWorkers, runtimeSession.id)
     return null
@@ -238,7 +240,7 @@ async function processCloudSyncSession(deps, cloudSyncWorkers, runtimeSession) {
   const pendingParts = getPendingCloudSyncParts(runtimeSession)
   for (const part of pendingParts) {
     try {
-      await uploadCloudSyncPart(deps, runtimeSession, part)
+      await uploadCloudSyncPart(runtimeSession, part)
     } catch {
       return {
         retryDelayMs: getCloudSyncRetryDelayMs(part.retryCount)
@@ -255,7 +257,7 @@ async function processCloudSyncSession(deps, cloudSyncWorkers, runtimeSession) {
     allReadyPartsUploaded &&
     ['pending', 'syncing', 'failed', 'merging'].includes(runtimeSession.manifest.cloudSync.status)
   ) {
-    const merged = await mergeCloudSyncRecordingSession(deps, cloudSyncWorkers, runtimeSession)
+    const merged = await mergeCloudSyncRecordingSession(cloudSyncWorkers, runtimeSession)
     if (!merged) {
       return {
         retryDelayMs: getCloudSyncRetryDelayMs(0)
@@ -273,9 +275,7 @@ async function processCloudSyncSession(deps, cloudSyncWorkers, runtimeSession) {
 }
 
 /** 安排云同步 worker 在指定延迟后继续处理当前会话。 */
-export function scheduleCloudSyncProcessing(deps, cloudSyncWorkers, runtimeSession, delayMs = 0) {
-  const { getCloudSyncRetryDelayMs, persistRecordingSessionState } = deps
-
+export function scheduleCloudSyncProcessing(cloudSyncWorkers, runtimeSession, delayMs = 0) {
   if (!runtimeSession?.manifest?.cloudSyncEnabled) {
     return
   }
@@ -289,7 +289,7 @@ export function scheduleCloudSyncProcessing(deps, cloudSyncWorkers, runtimeSessi
   worker.timer = setTimeout(
     async () => {
       if (worker.running) {
-        scheduleCloudSyncProcessing(deps, cloudSyncWorkers, runtimeSession, 1_000)
+        scheduleCloudSyncProcessing(cloudSyncWorkers, runtimeSession, 1_000)
         return
       }
 
@@ -297,9 +297,9 @@ export function scheduleCloudSyncProcessing(deps, cloudSyncWorkers, runtimeSessi
       worker.timer = null
 
       try {
-        const result = await processCloudSyncSession(deps, cloudSyncWorkers, runtimeSession)
+        const result = await processCloudSyncSession(cloudSyncWorkers, runtimeSession)
         if (result?.retryDelayMs) {
-          scheduleCloudSyncProcessing(deps, cloudSyncWorkers, runtimeSession, result.retryDelayMs)
+          scheduleCloudSyncProcessing(cloudSyncWorkers, runtimeSession, result.retryDelayMs)
         }
       } catch (error) {
         setCloudSyncStatus(runtimeSession, 'failed', {
@@ -307,12 +307,7 @@ export function scheduleCloudSyncProcessing(deps, cloudSyncWorkers, runtimeSessi
           nextRetryAt: Date.now() + getCloudSyncRetryDelayMs(0)
         })
         await persistRecordingSessionState(runtimeSession).catch(() => {})
-        scheduleCloudSyncProcessing(
-          deps,
-          cloudSyncWorkers,
-          runtimeSession,
-          getCloudSyncRetryDelayMs(0)
-        )
+        scheduleCloudSyncProcessing(cloudSyncWorkers, runtimeSession, getCloudSyncRetryDelayMs(0))
       } finally {
         worker.running = false
       }
@@ -322,10 +317,10 @@ export function scheduleCloudSyncProcessing(deps, cloudSyncWorkers, runtimeSessi
 }
 
 /** 在录屏停止后立即触发云同步收尾流程。 */
-export function scheduleCloudSyncFinalize(deps, cloudSyncWorkers, runtimeSession) {
+export function scheduleCloudSyncFinalize(cloudSyncWorkers, runtimeSession) {
   if (!runtimeSession.manifest.cloudSyncEnabled) {
     return
   }
 
-  scheduleCloudSyncProcessing(deps, cloudSyncWorkers, runtimeSession, 0)
+  scheduleCloudSyncProcessing(cloudSyncWorkers, runtimeSession, 0)
 }

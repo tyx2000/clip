@@ -1,20 +1,21 @@
 /** 文件作用：注册主进程录屏 IPC，并把请求分发给录屏服务层。 */
 import { ipcMain, shell } from 'electron'
 import { existsSync } from 'fs'
-import { getPosterPathByVideoPath, getRecordingsDirectoryPath } from './recordingPaths'
 import {
   createRecordingPlayerWindow,
+  getPosterPathByVideoPath,
+  getRecordingsDirectoryPath,
   getScreenCapturePermissionDetails,
   listCaptureSources,
   openScreenCaptureSettings,
-  resolvePreferredDisplaySource as resolvePreferredDisplaySourceById
-} from './recordingShell'
+  resolvePreferredDisplaySource
+} from './mediaUtils'
 
 let preferredDisplaySourceId = ''
 
 /** 根据记录的偏好录制源 id 选出最终录制源。 */
 export function resolvePreferredRecordingDisplaySource(sources) {
-  return resolvePreferredDisplaySourceById(sources, preferredDisplaySourceId)
+  return resolvePreferredDisplaySource(sources, preferredDisplaySourceId)
 }
 
 /** 一次性注册当前文件中的全部录屏 IPC。 */
