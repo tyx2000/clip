@@ -2,6 +2,8 @@ import { BrowserWindow, desktopCapturer, shell, systemPreferences } from 'electr
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 
+const meetingWindows = new Map()
+
 function mapCaptureSourceItem(source) {
   return {
     id: source.id,
@@ -110,6 +112,15 @@ export function createMainWindow({ iconPath, baseDir }) {
 }
 
 export function createMeetingWindow({ baseDir, roomId = '', sessionPayload = null }) {
+  const existingWindow = roomId ? meetingWindows.get(roomId) : null
+  if (existingWindow && !existingWindow.isDestroyed()) {
+    if (existingWindow.isMinimized()) {
+      existingWindow.restore()
+    }
+    existingWindow.focus()
+    return existingWindow
+  }
+
   const meetingWindow = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -137,6 +148,15 @@ export function createMeetingWindow({ baseDir, roomId = '', sessionPayload = nul
   } else {
     meetingWindow.loadFile(join(baseDir, '../renderer/index.html'), {
       query: Object.fromEntries(query.entries())
+    })
+  }
+
+  if (roomId) {
+    meetingWindows.set(roomId, meetingWindow)
+    meetingWindow.on('closed', () => {
+      if (meetingWindows.get(roomId) === meetingWindow) {
+        meetingWindows.delete(roomId)
+      }
     })
   }
 

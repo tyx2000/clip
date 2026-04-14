@@ -1,18 +1,18 @@
 import PropTypes from 'prop-types'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import styled from 'styled-components'
 import MeetingPanel from './components/MeetingPanel'
 import MeetingRoomCard from './components/MeetingRoomCard'
-import SourcePickerModal from './components/SourcePickerModal'
 import { useScreenShareController } from './hooks/useScreenShareController'
-import { readMeetingRooms, removeMeetingRoom, upsertMeetingRoom } from './utils/meetingRoomsStorage'
+import { ensureCurrentUserId } from './utils/currentUserStorage'
+import { readMeetingRooms, upsertMeetingRoom, writeMeetingRooms } from './utils/meetingRoomsStorage'
 
 const Page = styled.main`
   height: 100%;
-  padding: 22px;
+  padding: 20px;
   display: grid;
   grid-template-rows: auto 1fr;
-  gap: 14px;
+  gap: 12px;
 `
 
 const TopBar = styled.section`
@@ -20,8 +20,8 @@ const TopBar = styled.section`
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px;
-  border-radius: 12px;
+  padding: 14px;
+  border-radius: 10px;
   border: 1px solid var(--line-soft);
   background: var(--color-block-card-strong);
 `
@@ -56,7 +56,7 @@ const MetricsRow = styled.div`
 `
 
 const MetricPill = styled.span`
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 5px 9px;
   border: 1px solid var(--line-soft);
   background: var(--color-block-input);
@@ -74,13 +74,13 @@ const TopActions = styled.div`
   justify-content: flex-end;
 `
 
-const Button = styled.button`
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
+const MeetingButton = styled.button`
+  border-radius: 8px;
   padding: 9px 12px;
   min-width: 112px;
-  background: var(--color-block-input);
-  color: var(--color-text);
+  border: 1px solid #0f172a;
+  background: var(--color-block-button);
+  color: #ffffff;
   font-weight: 600;
   cursor: pointer;
 
@@ -90,17 +90,11 @@ const Button = styled.button`
   }
 `
 
-const MeetingButton = styled(Button)`
-  border: none;
-  background: var(--color-block-button);
-  color: #ffffff;
-`
-
 const ListWrap = styled.section`
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid var(--line-soft);
   background: var(--color-block-card);
-  padding: 14px;
+  padding: 12px;
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 12px;
@@ -152,65 +146,67 @@ function parseInitialSession(searchParams) {
   }
 }
 
-function MeetingWindow({ initialRoomId, initialSessionPayload }) {
+function MeetingWindow({ currentUserId, initialRoomId, initialSessionPayload }) {
   const shareController = useScreenShareController({
     isMeetingWindow: true,
     initialRoomId,
-    initialSessionPayload
+    initialSessionPayload,
+    currentUserId
   })
 
-  return (
-    <>
-      <MeetingPanel
-        roomState={shareController.roomState}
-        shareState={shareController.shareState}
-        connectionLabel={shareController.connectionLabel}
-        microphoneEnabled={shareController.microphoneEnabled}
-        microphoneState={shareController.microphoneState}
-        statusMessage={shareController.statusMessage}
-        roomInfo={shareController.roomInfo}
-        joinRoomId={shareController.joinRoomId}
-        setJoinRoomId={shareController.setJoinRoomId}
-        localVideoRef={shareController.localVideoRef}
-        remoteVideoRef={shareController.remoteVideoRef}
-        isJoined={shareController.isJoined}
-        isSharing={shareController.isSharing}
-        isHost={shareController.isHost}
-        isViewer={shareController.isViewer}
-        onCreateRoom={shareController.createRoom}
-        onJoinRoom={shareController.joinRoom}
-        onLeaveRoom={shareController.leaveRoom}
-        onOpenSourcePicker={shareController.openSourcePicker}
-        onStopSharing={shareController.stopSharing}
-        onCopyRoomId={shareController.copyRoomId}
-        onToggleMicrophone={shareController.toggleMicrophone}
-      />
+  useEffect(() => {
+    const roomId = shareController.roomInfo?.roomId || shareController.activeRoomId || initialRoomId
+    document.title = roomId ? `会议 · ${roomId}` : '会议'
 
-      <SourcePickerModal
-        open={shareController.pickerOpen}
-        loading={shareController.pickerLoading}
-        sources={shareController.pickerSources}
-        selectedSourceId={shareController.pickerSelectedSourceId}
-        cloudSyncEnabled={false}
-        showCloudSyncToggle={false}
-        title="选择共享源"
-        description="请选择要共享的屏幕或窗口，然后点击“开始共享”。"
-        confirmLabel="开始共享"
-        isBusy={shareController.shareState === 'starting'}
-        onSelect={shareController.setPickerSelectedSourceId}
-        onToggleCloudSync={shareController.noopToggle}
-        onCancel={shareController.closePicker}
-        onConfirm={shareController.beginShareWithSource}
-      />
-    </>
+    return () => {
+      document.title = '会议'
+    }
+  }, [initialRoomId, shareController.activeRoomId, shareController.roomInfo?.roomId])
+
+  return (
+    <MeetingPanel
+      connectionLabel={shareController.connectionLabel}
+      canLeaveMeeting={shareController.canLeaveMeeting}
+      microphoneEnabled={shareController.microphoneEnabled}
+      microphoneState={shareController.microphoneState}
+      activeRoomId={shareController.activeRoomId}
+      roomInfo={shareController.roomInfo}
+      currentPeerId={shareController.currentPeerId}
+      localVideoRef={shareController.localVideoRef}
+      remoteVideoRef={shareController.remoteVideoRef}
+      localPreviewStream={shareController.localPreviewStream}
+      remotePreviewStream={shareController.remotePreviewStream}
+      isSharing={shareController.isSharing}
+      isHost={shareController.isHost}
+      isRoomOwner={shareController.isRoomOwner}
+      isViewer={shareController.isViewer}
+      pickerOpen={shareController.pickerOpen}
+      pickerLoading={shareController.pickerLoading}
+      pickerSources={shareController.pickerSources}
+      pickerSelectedSourceId={shareController.pickerSelectedSourceId}
+      chatMessages={shareController.chatMessages}
+      onLeaveRoom={shareController.leaveRoom}
+      onCloseMeeting={shareController.closeMeeting}
+      onOpenSourcePicker={shareController.openSourcePicker}
+      onStopSharing={shareController.stopSharing}
+      onToggleMicrophone={shareController.toggleMicrophone}
+      onSelectShareSource={shareController.setPickerSelectedSourceId}
+      onCloseSharePopover={shareController.closePicker}
+      onConfirmShareSource={shareController.beginShareWithSource}
+      onSendChatText={shareController.sendChatText}
+      onSendChatImage={shareController.sendChatImage}
+    />
   )
 }
 
 MeetingWindow.propTypes = {
+  currentUserId: PropTypes.string.isRequired,
   initialRoomId: PropTypes.string.isRequired,
   initialSessionPayload: PropTypes.shape({
     roomId: PropTypes.string,
     role: PropTypes.string,
+    ownerUserId: PropTypes.string,
+    currentUserId: PropTypes.string,
     peerId: PropTypes.string,
     token: PropTypes.string,
     wsUrl: PropTypes.string
@@ -221,76 +217,122 @@ MeetingWindow.defaultProps = {
   initialSessionPayload: null
 }
 
-function LobbyWindow() {
+function LobbyWindow({ currentUserId }) {
   const [rooms, setRooms] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [statusMessage, setStatusMessage] = useState(
     '点击“会议”创建新房间，点击房间卡片可重新进入会议。'
   )
   const [isCreating, setIsCreating] = useState(false)
+  const latestRoomSnapshotRef = useRef([])
+  const hasReceivedSnapshotRef = useRef(false)
 
-  const refreshRooms = useCallback(async () => {
-    setIsLoading(true)
+  const mergeBackendRooms = useCallback((remoteRooms) => {
+    const roomMap = new Map(
+      (Array.isArray(remoteRooms) ? remoteRooms : [])
+        .filter((item) => typeof item?.roomId === 'string' && item.roomId)
+        .map((item) => [item.roomId, item])
+    )
 
-    try {
-      const storedRooms = readMeetingRooms()
-      const getRoom = window.api?.getScreenShareRoom
-
-      const enrichedRooms = await Promise.all(
-        storedRooms.map(async (item) => {
-          if (typeof getRoom !== 'function') {
-            return {
-              ...item,
-              hostPresent: false,
-              shareActive: false,
-              viewerCount: 0,
-              unavailable: true
-            }
-          }
-
-          try {
-            const payload = await getRoom({ roomId: item.roomId })
-            if (!payload?.ok) {
-              return {
-                ...item,
-                hostPresent: false,
-                shareActive: false,
-                viewerCount: 0,
-                unavailable: true
-              }
-            }
-
-            return {
-              ...item,
-              hostPresent: Boolean(payload.hostPresent),
-              shareActive: Boolean(payload.shareActive),
-              viewerCount: Number(payload.viewerCount || 0),
-              unavailable: false
-            }
-          } catch {
-            return {
-              ...item,
-              hostPresent: false,
-              shareActive: false,
-              viewerCount: 0,
-              unavailable: true
-            }
-          }
-        })
-      )
-
-      setRooms(enrichedRooms)
-    } catch (error) {
-      setStatusMessage(error?.message || '读取房间列表失败。')
-      setRooms(readMeetingRooms())
-    } finally {
-      setIsLoading(false)
+    const storedRooms = readMeetingRooms()
+    const nextStoredRooms = storedRooms.filter((item) => roomMap.has(item.roomId))
+    if (nextStoredRooms.length !== storedRooms.length) {
+      writeMeetingRooms(nextStoredRooms)
     }
+
+    const nextRooms = nextStoredRooms
+      .map((item) => {
+        const syncedRoom = roomMap.get(item.roomId) || {}
+        return {
+          ...item,
+          ...syncedRoom,
+          role: item.role || syncedRoom.role || 'host',
+          ownerUserId: item.ownerUserId || syncedRoom.ownerUserId || '',
+          peerId: item.peerId,
+          token: item.token,
+          wsUrl: item.wsUrl,
+          hostPresent:
+            typeof syncedRoom.hostPresent === 'boolean'
+              ? syncedRoom.hostPresent
+              : Boolean(item.hostPresent),
+          shareActive:
+            typeof syncedRoom.shareActive === 'boolean'
+              ? syncedRoom.shareActive
+              : Boolean(item.shareActive),
+          viewerCount: Number(
+            Number.isFinite(syncedRoom.viewerCount) ? syncedRoom.viewerCount : item.viewerCount || 0
+          )
+        }
+      })
+      .sort((left, right) => {
+        const leftUpdatedAt = new Date(left.updatedAt || left.createdAt || 0).getTime()
+        const rightUpdatedAt = new Date(right.updatedAt || right.createdAt || 0).getTime()
+        return rightUpdatedAt - leftUpdatedAt
+      })
+
+    setRooms(nextRooms)
   }, [])
 
   useEffect(() => {
-    void refreshRooms()
-  }, [refreshRooms])
+    let disposed = false
+    const subscribe = window.api?.subscribeScreenShareRooms
+    const unsubscribe = window.api?.unsubscribeScreenShareRooms
+    const onSnapshot = window.api?.onScreenShareRoomsSnapshot
+
+    if (typeof subscribe !== 'function' || typeof onSnapshot !== 'function') {
+      setIsLoading(false)
+      setStatusMessage('会议房间订阅接口不可用。')
+      return undefined
+    }
+
+    setIsLoading(true)
+
+    const stopListening = onSnapshot((payload) => {
+      if (disposed) {
+        return
+      }
+
+      latestRoomSnapshotRef.current = Array.isArray(payload?.rooms) ? payload.rooms : []
+      hasReceivedSnapshotRef.current = true
+      mergeBackendRooms(latestRoomSnapshotRef.current)
+      setIsLoading(false)
+    })
+
+    void subscribe().then((result) => {
+      if (disposed) {
+        return
+      }
+
+      if (!result?.ok) {
+        setIsLoading(false)
+        setStatusMessage(result?.message || '连接会议房间列表失败。')
+      }
+    })
+
+    return () => {
+      disposed = true
+      stopListening?.()
+      unsubscribe?.()
+    }
+  }, [mergeBackendRooms])
+
+  useEffect(() => {
+    const handleStorage = (event) => {
+      if (event.key && event.key !== 'clip-meeting-rooms') {
+        return
+      }
+
+      if (!hasReceivedSnapshotRef.current) {
+        return
+      }
+      mergeBackendRooms(latestRoomSnapshotRef.current)
+    }
+
+    window.addEventListener('storage', handleStorage)
+    return () => {
+      window.removeEventListener('storage', handleStorage)
+    }
+  }, [mergeBackendRooms])
 
   const openMeetingWindow = useCallback(async (payload) => {
     if (typeof window.api?.openScreenShareMeetingWindow !== 'function') {
@@ -312,16 +354,17 @@ function LobbyWindow() {
         throw new Error('当前环境不支持创建会议房间。')
       }
 
-      const payload = await window.api.createScreenShareRoom()
+      const payload = await window.api.createScreenShareRoom({ userId: currentUserId })
       if (!payload?.ok) {
         throw new Error(payload?.message || '创建会议房间失败。')
       }
 
       const nextRooms = upsertMeetingRoom({
         roomId: payload.roomId,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: payload.createdAt || new Date().toISOString(),
+        updatedAt: payload.updatedAt || new Date().toISOString(),
         role: payload.role,
+        ownerUserId: payload.ownerUserId || currentUserId,
         peerId: payload.peerId,
         token: payload.token,
         wsUrl: payload.wsUrl,
@@ -330,12 +373,22 @@ function LobbyWindow() {
         viewerCount: Number(payload.viewerCount || 0)
       })
 
-      setRooms(nextRooms)
+      setRooms((currentRooms) => {
+        const currentRoomMap = new Map(currentRooms.map((item) => [item.roomId, item]))
+        return nextRooms
+          .filter((item) => item.roomId === payload.roomId || currentRoomMap.has(item.roomId))
+          .map((item) => ({
+            ...(currentRoomMap.get(item.roomId) || {}),
+            ...item
+          }))
+      })
       await openMeetingWindow({
         roomId: payload.roomId,
         sessionPayload: {
           roomId: payload.roomId,
           role: payload.role,
+          ownerUserId: payload.ownerUserId || currentUserId,
+          currentUserId,
           peerId: payload.peerId,
           token: payload.token,
           wsUrl: payload.wsUrl
@@ -347,7 +400,7 @@ function LobbyWindow() {
     } finally {
       setIsCreating(false)
     }
-  }, [openMeetingWindow])
+  }, [currentUserId, openMeetingWindow])
 
   const handleOpenRoom = useCallback(
     async (item) => {
@@ -357,6 +410,8 @@ function LobbyWindow() {
           sessionPayload: {
             roomId: item.roomId,
             role: item.role || 'host',
+            ownerUserId: item.ownerUserId || '',
+            currentUserId,
             peerId: item.peerId,
             token: item.token,
             wsUrl: item.wsUrl
@@ -367,13 +422,8 @@ function LobbyWindow() {
         setStatusMessage(error?.message || '进入会议失败。')
       }
     },
-    [openMeetingWindow]
+    [currentUserId, openMeetingWindow]
   )
-
-  const handleDeleteRoom = useCallback((roomId) => {
-    setRooms(removeMeetingRoom(roomId))
-    setStatusMessage(`已删除房间 ${roomId}。`)
-  }, [])
 
   return (
     <Page>
@@ -391,9 +441,6 @@ function LobbyWindow() {
           <MeetingButton type="button" onClick={handleCreateMeeting} disabled={isCreating}>
             {isCreating ? '创建中...' : '会议'}
           </MeetingButton>
-          <Button type="button" onClick={refreshRooms} disabled={isLoading || isCreating}>
-            {isLoading ? '刷新中...' : '刷新列表'}
-          </Button>
         </TopActions>
       </TopBar>
 
@@ -410,12 +457,7 @@ function LobbyWindow() {
           ) : (
             <RoomsList>
               {rooms.map((item) => (
-                <MeetingRoomCard
-                  key={item.roomId}
-                  item={item}
-                  onOpen={handleOpenRoom}
-                  onDelete={handleDeleteRoom}
-                />
+                <MeetingRoomCard key={item.roomId} item={item} onOpen={handleOpenRoom} />
               ))}
             </RoomsList>
           )}
@@ -425,19 +467,28 @@ function LobbyWindow() {
   )
 }
 
+LobbyWindow.propTypes = {
+  currentUserId: PropTypes.string.isRequired
+}
+
 function App() {
   const params = useMemo(() => new URLSearchParams(window.location.search), [])
+  const currentUserId = useMemo(() => ensureCurrentUserId(), [])
   const initialRoomId = params.get('roomId') || ''
   const initialSessionPayload = parseInitialSession(params)
   const isMeetingWindow = params.get('meeting') === '1'
 
   if (isMeetingWindow) {
     return (
-      <MeetingWindow initialRoomId={initialRoomId} initialSessionPayload={initialSessionPayload} />
+      <MeetingWindow
+        currentUserId={currentUserId}
+        initialRoomId={initialRoomId}
+        initialSessionPayload={initialSessionPayload}
+      />
     )
   }
 
-  return <LobbyWindow />
+  return <LobbyWindow currentUserId={currentUserId} />
 }
 
 export default App

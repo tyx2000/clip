@@ -9,6 +9,7 @@ const ROOM_IDLE_TTL_MS = 30 * 60 * 1000
 const MAX_VIEWERS_PER_ROOM = 4
 
 const rooms = new Map()
+const roomListSubscribers = new Set()
 let screenShareServerPromise = null
 
 function getScreenShareServerOrigin() {
@@ -47,6 +48,10 @@ function getOnlineViewerCount(room) {
     }
   }
   return count
+}
+
+function hasAnyOnlineParticipant(room) {
+  return isSocketOpen(room.host?.socket) || getOnlineViewerCount(room) > 0
 }
 
 function getWsOrigin(req) {
@@ -98,11 +103,45 @@ function parseJsonBody(req) {
 function summarizeRoom(room) {
   return {
     roomId: room.roomId,
+    ownerUserId: room.ownerUserId || '',
+    createdAt: room.createdAt,
+    updatedAt: room.updatedAt,
     hostPresent: isSocketOpen(room.host?.socket),
     viewerCount: getOnlineViewerCount(room),
     shareActive: room.shareActive,
+    participants: summarizeParticipants(room),
     role: room.role || 'host'
   }
+}
+
+function summarizeParticipants(room) {
+  const participants = [
+    {
+      peerId: room.host.peerId,
+      userId: room.host.userId || '',
+      role: 'host',
+      connected: isSocketOpen(room.host.socket),
+      audioEnabled: Boolean(room.host.audioEnabled)
+    }
+  ]
+
+  for (const viewer of room.viewers.values()) {
+    participants.push({
+      peerId: viewer.peerId,
+      userId: viewer.userId || '',
+      role: 'viewer',
+      connected: isSocketOpen(viewer.socket),
+      audioEnabled: Boolean(viewer.audioEnabled)
+    })
+  }
+
+  return participants
+}
+
+function listRoomSummaries() {
+  return [...rooms.values()]
+    .map((room) => summarizeRoom(room))
+    .sort((left, right) => right.updatedAt - left.updatedAt)
 }
 
 function ensureRoom(roomId) {
@@ -114,22 +153,26 @@ function ensureRoom(roomId) {
   return room
 }
 
-function createRoom(req) {
+function createRoom(req, ownerUserId = '') {
   const roomId = createRoomId()
   const hostToken = createToken()
   const room = {
     roomId,
+    ownerUserId,
     createdAt: now(),
     updatedAt: now(),
     shareActive: false,
     host: {
       peerId: 'host',
+      userId: ownerUserId,
       token: hostToken,
-      socket: null
+      socket: null,
+      audioEnabled: false
     },
     viewers: new Map()
   }
   rooms.set(roomId, room)
+  broadcastRoomList()
 
   const wsOrigin = getWsOrigin(req)
   return {
@@ -143,7 +186,7 @@ function createRoom(req) {
   }
 }
 
-function joinRoom(req, roomId) {
+function joinRoom(req, roomId, userId = '') {
   const room = ensureRoom(roomId)
   if (!room) {
     return { ok: false, statusCode: 404, message: 'Room not found.' }
@@ -157,10 +200,13 @@ function joinRoom(req, roomId) {
   const token = createToken()
   room.viewers.set(peerId, {
     peerId,
+    userId,
     token,
-    socket: null
+    socket: null,
+    audioEnabled: false
   })
   room.updatedAt = now()
+  broadcastRoomList()
 
   return {
     ok: true,
@@ -173,12 +219,12 @@ function joinRoom(req, roomId) {
   }
 }
 
-function createRoomLocal() {
-  return createRoom(null)
+function createRoomLocal(ownerUserId = '') {
+  return createRoom(null, ownerUserId)
 }
 
-function joinRoomLocal(roomId) {
-  return joinRoom(null, roomId)
+function joinRoomLocal(roomId, userId = '') {
+  return joinRoom(null, roomId, userId)
 }
 
 function getRoomSummaryLocal(roomId) {
@@ -207,6 +253,17 @@ function sendJson(socket, payload) {
   socket.send(JSON.stringify(payload))
 }
 
+function broadcastRoomList() {
+  const payload = {
+    type: 'rooms-snapshot',
+    rooms: listRoomSummaries()
+  }
+
+  for (const socket of roomListSubscribers) {
+    sendJson(socket, payload)
+  }
+}
+
 function broadcastRoomState(room) {
   const payload = {
     type: 'room-state',
@@ -220,24 +277,62 @@ function broadcastRoomState(room) {
       sendJson(viewer.socket, payload)
     }
   }
+  broadcastRoomList()
+}
+
+function closeRoom(room, message = 'Host left the meeting. Room closed.') {
+  const payload = {
+    type: 'room-closed',
+    roomId: room.roomId,
+    message
+  }
+
+  if (room.host.socket) {
+    sendJson(room.host.socket, payload)
+  }
+
+  for (const viewer of room.viewers.values()) {
+    if (!viewer.socket) {
+      continue
+    }
+
+    sendJson(viewer.socket, payload)
+    viewer.socket.close()
+  }
+
+  rooms.delete(room.roomId)
+  broadcastRoomList()
+}
+
+function broadcastChatMessage(room, messagePayload) {
+  const payload = {
+    type: 'chat-message',
+    message: messagePayload
+  }
+
+  if (room.host.socket) {
+    sendJson(room.host.socket, payload)
+  }
+
+  for (const viewer of room.viewers.values()) {
+    if (viewer.socket) {
+      sendJson(viewer.socket, payload)
+    }
+  }
 }
 
 function handlePeerDisconnect(room, role, peerId) {
   if (role === 'host') {
     room.host.socket = null
+    room.host.audioEnabled = false
     room.shareActive = false
-    for (const viewer of room.viewers.values()) {
-      if (viewer.socket) {
-        sendJson(viewer.socket, {
-          type: 'share-stopped',
-          room: summarizeRoom(room)
-        })
-      }
-    }
+    closeRoom(room, '主持人已离开会议，房间已关闭。')
+    return true
   } else {
     const viewer = room.viewers.get(peerId)
     if (viewer) {
       viewer.socket = null
+      viewer.audioEnabled = false
     }
     if (room.host.socket) {
       sendJson(room.host.socket, {
@@ -247,8 +342,14 @@ function handlePeerDisconnect(room, role, peerId) {
     }
   }
 
+  if (!hasAnyOnlineParticipant(room)) {
+    closeRoom(room, '会议内已无人在线，房间已关闭。')
+    return true
+  }
+
   room.updatedAt = now()
   broadcastRoomState(room)
+  return false
 }
 
 function removePeer(room, role, peerId) {
@@ -257,8 +358,16 @@ function removePeer(room, role, peerId) {
     return
   }
 
-  handlePeerDisconnect(room, role, peerId)
+  const roomClosed = handlePeerDisconnect(room, role, peerId)
+  if (roomClosed) {
+    return
+  }
+
   room.viewers.delete(peerId)
+  if (!hasAnyOnlineParticipant(room)) {
+    closeRoom(room, '会议内已无人在线，房间已关闭。')
+    return
+  }
   room.updatedAt = now()
   broadcastRoomState(room)
 }
@@ -284,12 +393,18 @@ function handleSignalMessage(room, socketState, message) {
 
 function cleanupRooms() {
   const cutoff = now() - ROOM_IDLE_TTL_MS
+  let changed = false
   for (const [roomId, room] of rooms.entries()) {
     const hostOnline = isSocketOpen(room.host?.socket)
     const hasOnlineViewer = [...room.viewers.values()].some((viewer) => isSocketOpen(viewer.socket))
     if (!hostOnline && !hasOnlineViewer && room.updatedAt < cutoff) {
       rooms.delete(roomId)
+      changed = true
     }
+  }
+
+  if (changed) {
+    broadcastRoomList()
   }
 }
 
@@ -386,6 +501,7 @@ function startScreenShareServer() {
 
   wss.on('connection', (socket) => {
     const socketState = {
+      subscriptionType: '',
       roomId: '',
       role: '',
       peerId: ''
@@ -397,6 +513,16 @@ function startScreenShareServer() {
         message = JSON.parse(String(raw || ''))
       } catch {
         sendJson(socket, { type: 'error', message: 'Invalid message payload.' })
+        return
+      }
+
+      if (message.type === 'subscribe-rooms') {
+        socketState.subscriptionType = 'rooms'
+        roomListSubscribers.add(socket)
+        sendJson(socket, {
+          type: 'rooms-snapshot',
+          rooms: listRoomSummaries()
+        })
         return
       }
 
@@ -469,6 +595,50 @@ function startScreenShareServer() {
         return
       }
 
+      if (message.type === 'audio-state') {
+        const peer = getPeer(room, socketState.role, socketState.peerId)
+        if (!peer) {
+          return
+        }
+
+        peer.audioEnabled = Boolean(message.active)
+        room.updatedAt = now()
+        broadcastRoomState(room)
+        return
+      }
+
+      if (message.type === 'chat-message') {
+        const kind = message.kind === 'image' ? 'image' : 'text'
+        const text =
+          kind === 'text'
+            ? String(message.text || '')
+                .trim()
+                .slice(0, 2000)
+            : ''
+        const imageDataUrl =
+          kind === 'image' ? String(message.imageDataUrl || '').slice(0, 3_000_000) : ''
+
+        if (!text && !imageDataUrl) {
+          return
+        }
+
+        if (imageDataUrl && !imageDataUrl.startsWith('data:image/')) {
+          return
+        }
+
+        broadcastChatMessage(room, {
+          messageId: randomId('msg-'),
+          roomId: room.roomId,
+          senderPeerId: socketState.peerId,
+          senderRole: socketState.role,
+          kind,
+          text,
+          imageDataUrl,
+          createdAt: now()
+        })
+        return
+      }
+
       if (message.type === 'leave') {
         removePeer(room, socketState.role, socketState.peerId)
         socketState.roomId = ''
@@ -489,6 +659,10 @@ function startScreenShareServer() {
     })
 
     socket.on('close', () => {
+      if (socketState.subscriptionType === 'rooms') {
+        roomListSubscribers.delete(socket)
+      }
+
       const room = ensureRoom(socketState.roomId)
       if (!room) {
         return

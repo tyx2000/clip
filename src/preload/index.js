@@ -1,14 +1,39 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+const ROOMS_EVENT_CHANNEL = 'onScreenShareRoomsSnapshot'
+const MEETING_EVENT_CHANNEL = 'onScreenShareMeetingSocketEvent'
+
+function createEventSubscription(channel, listener) {
+  const wrapped = (_, payload) => {
+    listener(payload)
+  }
+
+  ipcRenderer.on(channel, wrapped)
+  return () => {
+    ipcRenderer.removeListener(channel, wrapped)
+  }
+}
+
 const api = {
-  getScreenShareSources: () => ipcRenderer.invoke('screen-share:get-sources'),
-  setScreenShareSource: (payload) => ipcRenderer.invoke('screen-share:set-source', payload),
-  ensureScreenShareServer: () => ipcRenderer.invoke('screen-share:ensure-server'),
-  createScreenShareRoom: () => ipcRenderer.invoke('screen-share:create-room'),
-  joinScreenShareRoom: (payload) => ipcRenderer.invoke('screen-share:join-room', payload),
-  getScreenShareRoom: (payload) => ipcRenderer.invoke('screen-share:get-room', payload),
+  getScreenShareSources: () => ipcRenderer.invoke('getScreenShareSources'),
+  setScreenShareSource: (payload) => ipcRenderer.invoke('setScreenShareSource', payload),
+  ensureScreenShareServer: () => ipcRenderer.invoke('ensureScreenShareServer'),
+  createScreenShareRoom: () => ipcRenderer.invoke('createScreenShareRoom'),
+  joinScreenShareRoom: (payload) => ipcRenderer.invoke('joinScreenShareRoom', payload),
+  getScreenShareRoom: (payload) => ipcRenderer.invoke('getScreenShareRoom', payload),
+  subscribeScreenShareRooms: () => ipcRenderer.invoke('subscribeScreenShareRooms'),
+  unsubscribeScreenShareRooms: () => ipcRenderer.send('unsubscribeScreenShareRooms'),
+  onScreenShareRoomsSnapshot: (listener) => createEventSubscription(ROOMS_EVENT_CHANNEL, listener),
+  connectScreenShareMeetingSocket: (payload) =>
+    ipcRenderer.invoke('connectScreenShareMeetingSocket', payload),
+  sendScreenShareMeetingMessage: (payload) =>
+    ipcRenderer.invoke('sendScreenShareMeetingMessage', payload),
+  disconnectScreenShareMeetingSocket: (payload) =>
+    ipcRenderer.invoke('disconnectScreenShareMeetingSocket', payload),
+  onScreenShareMeetingSocketEvent: (listener) =>
+    createEventSubscription(MEETING_EVENT_CHANNEL, listener),
   openScreenShareMeetingWindow: (payload) =>
-    ipcRenderer.invoke('screen-share:open-meeting-window', payload)
+    ipcRenderer.invoke('openScreenShareMeetingWindow', payload)
 }
 
 if (process.contextIsolated) {

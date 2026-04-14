@@ -2,8 +2,16 @@ import { app, BrowserWindow, desktopCapturer, ipcMain, session } from 'electron'
 import { createRequire } from 'node:module'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { createShareHandlersRegistrar } from './shareHandlers'
-import { createMainWindow, createMeetingWindow, listCaptureSources } from './shareShell'
+import { registerShareHandlers, resolvePreferredDisplaySource } from './shareHandlers'
+import { createMainWindow } from './shareShell'
+import {
+  cleanupShareSocketsForWebContents,
+  connectScreenShareMeetingSocket,
+  disconnectScreenShareMeetingSocket,
+  sendScreenShareMeetingMessage,
+  subscribeScreenShareRooms,
+  unsubscribeScreenShareRooms
+} from './shareSocketHub'
 
 const require = createRequire(import.meta.url)
 const {
@@ -16,12 +24,6 @@ const {
 
 let screenShareServerHandle = null
 
-const { registerShareHandlers, resolvePreferredDisplaySource } = createShareHandlersRegistrar({
-  listCaptureSources,
-  createMeetingWindow,
-  baseDir: __dirname
-})
-
 async function ensureScreenShareServer() {
   if (screenShareServerHandle) {
     return screenShareServerHandle
@@ -33,10 +35,10 @@ async function ensureScreenShareServer() {
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.electron.clip-share')
-  registerShareHandlers()
+  registerShareHandlers(__dirname)
   await ensureScreenShareServer()
 
-  ipcMain.handle('screen-share:ensure-server', async () => {
+  ipcMain.handle('ensureScreenShareServer', async () => {
     await ensureScreenShareServer()
     return {
       ok: true,
@@ -44,10 +46,11 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('screen-share:create-room', async () => {
+  ipcMain.handle('createScreenShareRoom', async (_, payload = {}) => {
     try {
       await ensureScreenShareServer()
-      return createRoomLocal()
+      const userId = typeof payload?.userId === 'string' ? payload.userId : ''
+      return createRoomLocal(userId)
     } catch (error) {
       return {
         ok: false,
@@ -56,11 +59,12 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('screen-share:join-room', async (_, payload = {}) => {
+  ipcMain.handle('joinScreenShareRoom', async (_, payload = {}) => {
     try {
       await ensureScreenShareServer()
       const roomId = typeof payload?.roomId === 'string' ? payload.roomId.trim() : ''
-      const result = joinRoomLocal(roomId)
+      const userId = typeof payload?.userId === 'string' ? payload.userId : ''
+      const result = joinRoomLocal(roomId, userId)
       if (!result?.ok) {
         return {
           ok: false,
@@ -76,7 +80,7 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('screen-share:get-room', async (_, payload = {}) => {
+  ipcMain.handle('getScreenShareRoom', async (_, payload = {}) => {
     try {
       await ensureScreenShareServer()
       const roomId = typeof payload?.roomId === 'string' ? payload.roomId.trim() : ''
@@ -94,6 +98,45 @@ app.whenReady().then(async () => {
         message: error instanceof Error ? error.message : '读取会议房间失败。'
       }
     }
+  })
+
+  ipcMain.handle('subscribeScreenShareRooms', async (event) => {
+    try {
+      await subscribeScreenShareRooms(event.sender, {
+        ensureScreenShareServer,
+        getScreenShareServerOrigin
+      })
+      return { ok: true }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : '订阅会议房间列表失败。'
+      }
+    }
+  })
+
+  ipcMain.on('unsubscribeScreenShareRooms', (event) => {
+    unsubscribeScreenShareRooms(event.sender.id)
+  })
+
+  ipcMain.handle('connectScreenShareMeetingSocket', async (event, payload = {}) => {
+    try {
+      await ensureScreenShareServer()
+      return await connectScreenShareMeetingSocket(event.sender, payload)
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : '连接会议房间失败。'
+      }
+    }
+  })
+
+  ipcMain.handle('sendScreenShareMeetingMessage', async (event, payload = {}) => {
+    return sendScreenShareMeetingMessage(event.sender.id, payload)
+  })
+
+  ipcMain.handle('disconnectScreenShareMeetingSocket', async (event, payload = {}) => {
+    return disconnectScreenShareMeetingSocket(event.sender.id, payload)
   })
 
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
@@ -120,6 +163,15 @@ app.whenReady().then(async () => {
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
+    const webContentsId = window.webContents.id
+
+    window.once('close', () => {
+      cleanupShareSocketsForWebContents(webContentsId)
+    })
+
+    window.webContents.once('destroyed', () => {
+      cleanupShareSocketsForWebContents(webContentsId)
+    })
   })
 
   createMainWindow({

@@ -1,86 +1,30 @@
 import PropTypes from 'prop-types'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import styled from 'styled-components'
+import { formatDateTime24, middleEllipsis } from '../utils/shareUtils'
 
 const Page = styled.main`
   height: 100%;
-  padding: 18px;
+  padding: 14px;
   display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 14px;
-  background: linear-gradient(180deg, #edf4ff 0%, #f8fafc 100%);
+  background: #eef3f8;
 `
 
-const Card = styled.section`
-  border-radius: 14px;
-  border: 1px solid var(--line-soft);
-  background: rgba(255, 255, 255, 0.92);
-  padding: 16px;
-`
-
-const Header = styled.div`
-  display: grid;
-  gap: 6px;
-`
-
-const Title = styled.h1`
-  margin: 0;
-  font-size: 22px;
-`
-
-const Desc = styled.p`
-  margin: 0;
-  color: var(--color-text-soft);
-  font-size: 13px;
-`
-
-const Status = styled.p`
-  margin: 0;
-  color: var(--color-text-soft);
+const MetaPill = styled.span`
+  border-radius: 8px;
+  padding: 7px 10px;
+  border: 1px solid ${({ $accent }) => ($accent ? '#1d4ed8' : 'var(--line-soft)')};
+  background: ${({ $accent }) => ($accent ? '#dbeafe' : '#ffffff')};
+  color: ${({ $accent }) => ($accent ? '#1d4ed8' : 'var(--color-text-soft)')};
   font-size: 12px;
+  white-space: nowrap;
 `
 
-const Grid = styled.div`
-  display: grid;
-  grid-template-columns: minmax(300px, 360px) 1fr;
-  gap: 14px;
-
-  @media (max-width: 960px) {
-    grid-template-columns: 1fr;
-  }
-`
-
-const LeftColumn = styled.div`
-  display: grid;
-  gap: 14px;
-`
-
-const RightColumn = styled.div`
-  display: grid;
-  gap: 14px;
-`
-
-const Row = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-`
-
-const Input = styled.input`
-  width: 100%;
+const GhostButton = styled.button`
   border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: var(--color-block-input);
-  color: var(--color-text);
-`
-
-const Button = styled.button`
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  padding: 9px 12px;
-  min-width: 112px;
-  background: var(--color-block-input);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: #ffffff;
   color: var(--color-text);
   font-weight: 600;
   cursor: pointer;
@@ -91,263 +35,964 @@ const Button = styled.button`
   }
 `
 
-const PrimaryButton = styled(Button)`
-  border: none;
-  background: var(--color-block-button);
-  color: #ffffff;
+const Layout = styled.section`
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 420px);
+  gap: 12px;
+
+  @media (max-width: 980px) {
+    grid-template-columns: 1fr;
+  }
 `
 
-const DangerButton = styled(Button)`
-  border: none;
-  background: #b42318;
-  color: #ffffff;
-`
-
-const Pill = styled.span`
-  border-radius: 999px;
-  padding: 5px 9px;
+const StagePanel = styled.section`
+  min-height: 0;
+  border-radius: 10px;
   border: 1px solid var(--line-soft);
-  background: ${({ $active }) => ($active ? '#eff6ff' : 'var(--color-block-input)')};
-  color: ${({ $active }) => ($active ? '#1d4ed8' : 'var(--color-text-soft)')};
-  font-size: 12px;
-  white-space: nowrap;
+  background: #f7fbff;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
 `
 
-const PreviewStage = styled.div`
-  width: 100%;
-  min-height: 420px;
-  border-radius: 14px;
-  overflow: hidden;
-  background: #0f172a;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+const StageWrap = styled.div`
   position: relative;
+  min-height: 0;
+  padding: 14px;
+  background: #e8eff7;
+`
+
+const StageFrame = styled.div`
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+  background: #0f172a;
+  border: 1px solid #334155;
+
+  @media (max-width: 980px) {
+    min-height: 360px;
+  }
 `
 
 const PreviewVideo = styled.video`
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: #020617;
+  display: block;
 `
 
-const EmptyState = styled.div`
+const ParticipantStage = styled.div`
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  text-align: center;
-  padding: 28px;
-  color: #bfdbfe;
-  font-size: 14px;
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.26), rgba(15, 23, 42, 0.78));
+  padding: 26px;
+  background: #0f172a;
 `
 
+const ParticipantGrid = styled.div`
+  width: min(760px, 100%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+`
+
+const ParticipantCard = styled.div`
+  width: 128px;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  opacity: ${({ $connected }) => ($connected ? 1 : 0.56)};
+`
+
+const ParticipantAvatar = styled.div`
+  width: 78px;
+  height: 78px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  font-weight: 800;
+  color: #ffffff;
+  background: ${({ $color }) => $color};
+  border: 1px solid rgba(255, 255, 255, 0.28);
+`
+
+const ParticipantName = styled.p`
+  margin: 0;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+`
+
+const ParticipantMeta = styled.p`
+  margin: 0;
+  color: rgba(226, 232, 240, 0.88);
+  font-size: 12px;
+`
+
+const ParticipantAudioBadge = styled.span`
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: ${({ $active }) => ($active ? 'rgba(34, 197, 94, 0.18)' : 'rgba(15, 23, 42, 0.32)')};
+  color: ${({ $active }) => ($active ? '#bbf7d0' : 'rgba(226, 232, 240, 0.88)')};
+  font-size: 11px;
+  font-weight: 700;
+`
+
+const StageHint = styled.div`
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  justify-content: center;
+`
+
+const StageHintText = styled.p`
+  margin: 0;
+  max-width: 560px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.9);
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 12px;
+  text-align: center;
+`
+
+const ControlsBar = styled.div`
+  border-top: 1px solid var(--line-soft);
+  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+
+  @media (max-width: 720px) {
+    grid-template-columns: 1fr;
+  }
+`
+
+const ControlsBlock = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: ${({ $align }) => $align || 'flex-start'};
+  flex-wrap: wrap;
+  position: relative;
+`
+
+const ControlButton = styled.button`
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 12px 16px;
+  min-width: 122px;
+  background: ${({ $variant }) => {
+    if ($variant === 'danger') return '#dc2626'
+    if ($variant === 'primary') return '#2563eb'
+    if ($variant === 'muted') return '#0f172a'
+    return '#f8fafc'
+  }};
+  color: ${({ $variant }) => ($variant === 'secondary' ? '#0f172a' : '#ffffff')};
+  font-weight: 700;
+  cursor: pointer;
+  border-color: ${({ $variant }) => {
+    if ($variant === 'danger') return '#991b1b'
+    if ($variant === 'primary') return '#1e40af'
+    if ($variant === 'muted') return '#0f172a'
+    return 'var(--line-soft)'
+  }};
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+`
+
+const ShareStageOverlay = styled.div`
+  position: absolute;
+  inset: 0;
+  padding: 16px;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 6, 23, 0.85);
+`
+
+const ShareStageCard = styled.div`
+  width: min(860px, 100%);
+  max-height: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  background: #ffffff;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+`
+
+const ShareStageHeader = styled.div`
+  padding: 14px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+`
+
+const ShareStageMeta = styled.div`
+  display: grid;
+  gap: 6px;
+`
+
+const ShareStageTitle = styled.h3`
+  margin: 0;
+  font-size: 18px;
+`
+
+const ShareStageDesc = styled.p`
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 13px;
+`
+
+const ShareStageClose = styled.button`
+  border: none;
+  background: transparent;
+  color: var(--color-text-soft);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+`
+
+const ShareStageBody = styled.div`
+  padding: 14px;
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+`
+
+const ShareSourcesGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+`
+
+const ShareSourceCard = styled.button`
+  border: ${({ $selected }) => ($selected ? '2px solid #2563eb' : '1px solid var(--line-soft)')};
+  border-radius: 8px;
+  background: ${({ $selected }) => ($selected ? '#eff6ff' : '#ffffff')};
+  padding: 10px;
+  text-align: left;
+  display: grid;
+  gap: 8px;
+  cursor: pointer;
+`
+
+const ShareThumb = styled.div`
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0f172a;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+`
+
+const ShareSourceName = styled.p`
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text);
+`
+
+const ShareSourceMeta = styled.p`
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-soft);
+`
+
+const ShareStageHeaderActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+`
+
+const ShareStageStatus = styled.p`
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+`
+
+const ChatPanel = styled.section`
+  min-height: 0;
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  background: #ffffff;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+`
+
+const ChatHeader = styled.div`
+  padding: 14px;
+  border-bottom: 1px solid var(--line-soft);
+  display: grid;
+  gap: 6px;
+`
+
+const ChatTitle = styled.h2`
+  margin: 0;
+  font-size: 18px;
+`
+
+const ChatDescription = styled.p`
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+`
+
+const ChatScroll = styled.div`
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  background: #f8fbff;
+`
+
+const EmptyChat = styled.p`
+  margin: auto 0;
+  color: var(--color-text-soft);
+  font-size: 13px;
+  text-align: center;
+`
+
+const MessageRow = styled.div`
+  display: flex;
+  justify-content: ${({ $mine }) => ($mine ? 'flex-end' : 'flex-start')};
+`
+
+const MessageBubble = styled.div`
+  max-width: min(78%, 320px);
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: ${({ $mine }) => ($mine ? '8px 8px 2px 8px' : '8px 8px 8px 2px')};
+  background: ${({ $mine }) => ($mine ? '#2563eb' : '#ffffff')};
+  color: ${({ $mine }) => ($mine ? '#ffffff' : 'var(--color-text)')};
+  border: 1px solid ${({ $mine }) => ($mine ? '#1e40af' : 'var(--line-soft)')};
+`
+
+const MessageAuthor = styled.p`
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: inherit;
+  opacity: 0.82;
+`
+
+const MessageText = styled.p`
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+`
+
+const MessageImage = styled.img`
+  width: 100%;
+  max-width: 260px;
+  border-radius: 6px;
+  display: block;
+  cursor: zoom-in;
+`
+
+const MessageTime = styled.p`
+  margin: 0;
+  font-size: 11px;
+  color: inherit;
+  opacity: 0.7;
+  justify-self: ${({ $mine }) => ($mine ? 'end' : 'start')};
+`
+
+const ChatComposer = styled.div`
+  padding: 14px;
+  border-top: 1px solid var(--line-soft);
+  background: #ffffff;
+  display: grid;
+  gap: 10px;
+`
+
+const ChatInput = styled.textarea`
+  width: 100%;
+  min-height: 110px;
+  resize: none;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #ffffff;
+  color: var(--color-text);
+  font: inherit;
+`
+
+const ChatComposerActions = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+`
+
+const ChatActionGroup = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+`
+
+const ComposerButton = styled.button`
+  border: 1px solid ${({ $primary }) => ($primary ? '#1e40af' : 'var(--line-soft)')};
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: ${({ $primary }) => ($primary ? '#2563eb' : '#e2e8f0')};
+  color: ${({ $primary }) => ($primary ? '#ffffff' : '#0f172a')};
+  font-weight: 700;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+`
+
+const HiddenFileInput = styled.input`
+  display: none;
+`
+
+const ImagePreviewOverlay = styled.div`
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.78);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  z-index: 2000;
+`
+
+const ImagePreviewFrame = styled.button`
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: zoom-out;
+
+  img {
+    max-width: min(90vw, 1200px);
+    max-height: 88vh;
+    display: block;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+  }
+`
+
+function hashColor(input) {
+  const palette = ['#2563eb', '#0891b2', '#db2777', '#16a34a', '#9333ea', '#ea580c', '#dc2626']
+  const text = String(input || 'clip')
+  let hash = 0
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0
+  }
+  return palette[hash % palette.length]
+}
+
+function buildParticipantCards(roomInfo) {
+  const participants = Array.isArray(roomInfo?.participants) ? roomInfo.participants : []
+  let viewerIndex = 0
+
+  return participants.map((participant) => {
+    const isHost = participant.role === 'host'
+    viewerIndex += isHost ? 0 : 1
+    return {
+      ...participant,
+      label: isHost ? '主持人' : `观${viewerIndex}`,
+      avatarText: isHost ? '主' : String(viewerIndex),
+      color: hashColor(participant.peerId),
+      audioEnabled: Boolean(participant.audioEnabled)
+    }
+  })
+}
+
+function resolveMessageSenderLabel(message, participants) {
+  const matchedParticipant = participants.find(
+    (participant) => participant.peerId === message.senderPeerId
+  )
+  if (matchedParticipant) {
+    return matchedParticipant.label
+  }
+  return message.senderRole === 'host' ? '主持人' : '参会人'
+}
+
 function MeetingPanel({
-  roomState,
-  shareState,
   connectionLabel,
+  canLeaveMeeting,
   microphoneEnabled,
   microphoneState,
-  statusMessage,
+  activeRoomId,
   roomInfo,
-  joinRoomId,
-  setJoinRoomId,
+  currentPeerId,
   localVideoRef,
   remoteVideoRef,
-  isJoined,
+  localPreviewStream,
+  remotePreviewStream,
   isSharing,
   isHost,
+  isRoomOwner,
   isViewer,
-  onCreateRoom,
-  onJoinRoom,
+  pickerOpen,
+  pickerLoading,
+  pickerSources,
+  pickerSelectedSourceId,
+  chatMessages,
   onLeaveRoom,
+  onCloseMeeting,
   onOpenSourcePicker,
   onStopSharing,
-  onCopyRoomId,
-  onToggleMicrophone
+  onToggleMicrophone,
+  onSelectShareSource,
+  onCloseSharePopover,
+  onConfirmShareSource,
+  onSendChatText,
+  onSendChatImage
 }) {
-  const isBusy =
-    roomState === 'creating' ||
-    roomState === 'joining' ||
-    shareState === 'starting' ||
-    connectionLabel === '连接中'
+  const fileInputRef = useRef(null)
+  const messageEndRef = useRef(null)
+  const [draftText, setDraftText] = useState('')
+  const [previewImageUrl, setPreviewImageUrl] = useState('')
+  const participantCards = useMemo(() => buildParticipantCards(roomInfo), [roomInfo])
+  const canShowShareControls = isHost || isRoomOwner
+  // Host should always see local preview once a display stream exists, even if remote share-state
+  // synchronization is slightly behind.
+  const hasLocalSharePreview = Boolean(localPreviewStream)
+  const showSharedVideo =
+    hasLocalSharePreview || (isHost ? isSharing : Boolean(roomInfo?.shareActive))
+  const showLocalPreview = hasLocalSharePreview || isHost
 
-  let previewText = '创建或加入会议后，可在这里查看共享桌面。'
-  if (isHost && isSharing) {
-    previewText = '正在发送你的桌面画面。'
-  } else if (isHost) {
-    previewText = '语音通话已就绪，点击“共享桌面”后选择要共享的屏幕或窗口。'
-  } else if (isViewer && roomInfo?.shareActive) {
-    previewText = '主持人正在共享桌面，正在连接画面...'
-  } else if (isViewer && roomInfo?.hostPresent) {
-    previewText = '已加入会议，当前只有语音通话，等待主持人开始共享。'
-  } else if (isViewer) {
-    previewText = '主持人暂未在线。'
-  }
+  const stageHint = showSharedVideo
+    ? isHost
+      ? '你正在向会议发送桌面画面。停止共享后将恢复头像墙。'
+      : '主持人正在共享桌面，语音和聊天会继续保持。'
+    : isViewer && !roomInfo?.hostPresent
+      ? '主持人暂未在线，房间关闭后你会收到提示。'
+      : '当前为语音会议模式，主持人开始共享后这里会切换为桌面画面。'
 
   const microphoneLabel =
-    microphoneState === 'requesting'
-      ? '麦克风连接中'
-      : microphoneEnabled
-        ? '麦克风开启'
-        : '麦克风关闭'
+    microphoneState === 'requesting' ? '开麦中...' : microphoneEnabled ? '麦克风已开' : '静音中'
+
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [chatMessages])
+
+  useEffect(() => {
+    const node = localVideoRef.current
+    if (!node) {
+      return
+    }
+
+    node.srcObject = localPreviewStream || null
+    if (localPreviewStream) {
+      node.play().catch(() => {})
+    }
+  }, [localPreviewStream, localVideoRef])
+
+  useEffect(() => {
+    const node = remoteVideoRef.current
+    if (!node) {
+      return
+    }
+
+    node.srcObject = remotePreviewStream || null
+    if (remotePreviewStream) {
+      node.play().catch(() => {})
+    }
+  }, [remotePreviewStream, remoteVideoRef])
+
+  const handleSendText = async () => {
+    const text = draftText.trim()
+    if (!text) {
+      return
+    }
+
+    const sent = await onSendChatText(text)
+    if (sent) {
+      setDraftText('')
+    }
+  }
+
+  const handleChatKeyDown = async (event) => {
+    if (event.key !== 'Enter' || event.shiftKey) {
+      return
+    }
+
+    event.preventDefault()
+    await handleSendText()
+  }
+
+  const handlePickImage = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileChange = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    await onSendChatImage(file)
+    event.target.value = ''
+  }
 
   return (
     <Page>
-      <Card>
-        <Header>
-          <Title>会议</Title>
-          <Desc>会议窗口默认准备语音通话，你可以在加入后随时开启桌面共享。</Desc>
-          <Status>{statusMessage}</Status>
-        </Header>
-      </Card>
+      <Layout>
+        <StagePanel>
+          <StageWrap>
+            <StageFrame>
+              {showSharedVideo ? (
+                <PreviewVideo
+                  ref={showLocalPreview ? localVideoRef : remoteVideoRef}
+                  muted={showLocalPreview}
+                  playsInline
+                  autoPlay
+                />
+              ) : null}
 
-      <Grid>
-        <LeftColumn>
-          <Card>
-            <Header>
-              <Title as="h2">会议房间</Title>
-              <Desc>创建房间后，把房间号发给另一端 Electron 应用即可加入。</Desc>
-            </Header>
-            <Row>
-              <PrimaryButton type="button" onClick={onCreateRoom} disabled={isBusy || isJoined}>
-                {roomState === 'creating' ? '创建中...' : '创建会议'}
-              </PrimaryButton>
-              <Button
+              {!showSharedVideo ? (
+                <ParticipantStage>
+                  <ParticipantGrid>
+                    {participantCards.length > 0 ? (
+                      participantCards.map((participant) => (
+                        <ParticipantCard
+                          key={participant.peerId}
+                          $connected={Boolean(participant.connected)}
+                        >
+                          <ParticipantAvatar $color={participant.color}>
+                            {participant.avatarText}
+                          </ParticipantAvatar>
+                          <ParticipantName>{participant.label}</ParticipantName>
+                          <ParticipantMeta>
+                            {participant.connected ? '在线' : '离线'}
+                          </ParticipantMeta>
+                          <ParticipantAudioBadge $active={participant.audioEnabled}>
+                            {participant.audioEnabled ? '已开麦' : '静音'}
+                          </ParticipantAudioBadge>
+                        </ParticipantCard>
+                      ))
+                    ) : (
+                      <ParticipantCard $connected>
+                        <ParticipantAvatar $color="#2563eb">会</ParticipantAvatar>
+                        <ParticipantName>等待参会人</ParticipantName>
+                        <ParticipantMeta>房间建立后头像会显示在这里</ParticipantMeta>
+                      </ParticipantCard>
+                    )}
+                  </ParticipantGrid>
+                </ParticipantStage>
+              ) : null}
+
+              <StageHint>
+                <StageHintText>{stageHint}</StageHintText>
+              </StageHint>
+
+              {pickerOpen ? (
+                <ShareStageOverlay>
+                  <ShareStageCard>
+                    <ShareStageHeader>
+                      <ShareStageMeta>
+                        <ShareStageTitle>选择共享源</ShareStageTitle>
+                        <ShareStageDesc>
+                          直接在会场区选择要共享的屏幕或窗口，确认后立即切换到共享画面。
+                        </ShareStageDesc>
+                        <ShareStageStatus>
+                          房间 {middleEllipsis(roomInfo?.roomId || activeRoomId || '--', 22)} ·{' '}
+                          {connectionLabel}
+                        </ShareStageStatus>
+                      </ShareStageMeta>
+                      <ShareStageHeaderActions>
+                        <GhostButton type="button" onClick={onCloseSharePopover}>
+                          取消
+                        </GhostButton>
+                        <ControlButton
+                          type="button"
+                          $variant="primary"
+                          onClick={onConfirmShareSource}
+                          disabled={!pickerSelectedSourceId || pickerLoading}
+                        >
+                          开始共享
+                        </ControlButton>
+                        <ShareStageClose type="button" onClick={onCloseSharePopover}>
+                          ×
+                        </ShareStageClose>
+                      </ShareStageHeaderActions>
+                    </ShareStageHeader>
+
+                    <ShareStageBody>
+                      {pickerLoading ? (
+                        <ShareStageStatus>正在加载共享源...</ShareStageStatus>
+                      ) : pickerSources.length === 0 ? (
+                        <ShareStageStatus>当前没有可用的共享源。</ShareStageStatus>
+                      ) : (
+                        <ShareSourcesGrid>
+                          {pickerSources.map((source) => (
+                            <ShareSourceCard
+                              key={source.id}
+                              type="button"
+                              $selected={source.id === pickerSelectedSourceId}
+                              onClick={() => onSelectShareSource(source.id)}
+                            >
+                              <ShareThumb>
+                                {source.thumbnailDataUrl ? (
+                                  <img src={source.thumbnailDataUrl} alt={source.name} />
+                                ) : null}
+                              </ShareThumb>
+                              <ShareSourceName>{source.name}</ShareSourceName>
+                              <ShareSourceMeta>
+                                {source.type === 'screen' ? '屏幕' : '窗口'}
+                              </ShareSourceMeta>
+                            </ShareSourceCard>
+                          ))}
+                        </ShareSourcesGrid>
+                      )}
+                    </ShareStageBody>
+                  </ShareStageCard>
+                </ShareStageOverlay>
+              ) : null}
+            </StageFrame>
+          </StageWrap>
+
+          <ControlsBar>
+            <ControlsBlock>
+              <ControlButton
                 type="button"
-                onClick={onCopyRoomId}
-                disabled={!roomInfo?.roomId || !isJoined}
-              >
-                复制房间号
-              </Button>
-            </Row>
-            <Row>
-              <Input
-                value={joinRoomId}
-                onChange={(event) => setJoinRoomId(event.target.value)}
-                placeholder="输入房间号后加入会议"
-                disabled={isBusy || isJoined}
-              />
-            </Row>
-            <Row>
-              <Button type="button" onClick={onJoinRoom} disabled={isBusy || isJoined}>
-                {roomState === 'joining' ? '加入中...' : '加入会议'}
-              </Button>
-              <Button type="button" onClick={onLeaveRoom} disabled={!isJoined}>
-                离开会议
-              </Button>
-            </Row>
-          </Card>
-
-          <Card>
-            <Header>
-              <Title as="h2">会议状态</Title>
-              <Desc>语音与共享状态都集中在这里。</Desc>
-            </Header>
-            <Row>
-              <Pill $active={Boolean(roomInfo?.roomId)}>房间号 {roomInfo?.roomId || '--'}</Pill>
-              <Pill $active={isJoined}>角色 {isHost ? '主持人' : isViewer ? '观众' : '--'}</Pill>
-              <Pill $active={connectionLabel === '已连接'}>{connectionLabel}</Pill>
-            </Row>
-            <Row>
-              <Pill $active={microphoneEnabled}>{microphoneLabel}</Pill>
-              <Pill $active={Boolean(roomInfo?.hostPresent)}>
-                主持人 {roomInfo?.hostPresent ? '在线' : '离线'}
-              </Pill>
-              <Pill $active={Boolean(roomInfo?.shareActive)}>
-                桌面共享 {roomInfo?.shareActive ? '进行中' : '未开始'}
-              </Pill>
-            </Row>
-            <Row>
-              <Pill>
-                参会人数{' '}
-                {isHost ? Number(roomInfo?.viewerCount || 0) + 1 : roomInfo?.roomId ? 2 : 0}
-              </Pill>
-            </Row>
-          </Card>
-
-          <Card>
-            <Header>
-              <Title as="h2">会议控制</Title>
-              <Desc>默认连麦，可随时静音或发起桌面共享。</Desc>
-            </Header>
-            <Row>
-              <PrimaryButton
-                type="button"
+                $variant={microphoneEnabled ? 'primary' : 'muted'}
                 onClick={onToggleMicrophone}
-                disabled={microphoneState === 'requesting'}
+                disabled={microphoneState === 'requesting' || !canLeaveMeeting}
               >
-                {microphoneEnabled ? '关闭麦克风' : '开启麦克风'}
-              </PrimaryButton>
-              {isHost && !isSharing ? (
-                <Button type="button" onClick={onOpenSourcePicker} disabled={!isJoined || isBusy}>
-                  共享桌面
-                </Button>
-              ) : null}
-              {isHost && isSharing ? (
-                <DangerButton type="button" onClick={onStopSharing} disabled={isBusy}>
-                  停止共享
-                </DangerButton>
-              ) : null}
-            </Row>
-          </Card>
-        </LeftColumn>
+                {microphoneLabel}
+              </ControlButton>
+            </ControlsBlock>
 
-        <RightColumn>
-          <Card>
-            <Header>
-              <Title as="h2">会议画面</Title>
-              <Desc>
-                {isHost ? '主持人可看到本地共享预览。' : '观众可在这里查看主持人的共享桌面。'}
-              </Desc>
-            </Header>
-            <PreviewStage>
-              <PreviewVideo
-                ref={isHost ? localVideoRef : remoteVideoRef}
-                muted={isHost}
-                playsInline
-                autoPlay
-              />
-              {(!isHost && !roomInfo?.shareActive) || (isHost && !isSharing) ? (
-                <EmptyState>{previewText}</EmptyState>
+            <ControlsBlock $align="center">
+              {canShowShareControls && !isSharing ? (
+                <ControlButton
+                  type="button"
+                  $variant="primary"
+                  onClick={onOpenSourcePicker}
+                  disabled={!canLeaveMeeting}
+                >
+                  共享桌面
+                </ControlButton>
               ) : null}
-            </PreviewStage>
-          </Card>
-        </RightColumn>
-      </Grid>
+              {canShowShareControls && isSharing ? (
+                <ControlButton type="button" $variant="danger" onClick={onStopSharing}>
+                  停止共享
+                </ControlButton>
+              ) : null}
+            </ControlsBlock>
+
+            <ControlsBlock $align="flex-end">
+              <MetaPill $accent={connectionLabel === '已连接'}>{connectionLabel}</MetaPill>
+              <ControlButton
+                type="button"
+                $variant="secondary"
+                onClick={onLeaveRoom}
+                disabled={!canLeaveMeeting}
+              >
+                离开会议
+              </ControlButton>
+              {isRoomOwner ? (
+                <ControlButton
+                  type="button"
+                  $variant="danger"
+                  onClick={onCloseMeeting}
+                  disabled={!canLeaveMeeting}
+                >
+                  结束会议
+                </ControlButton>
+              ) : null}
+            </ControlsBlock>
+          </ControlsBar>
+        </StagePanel>
+
+        <ChatPanel>
+          <ChatHeader>
+            <ChatTitle>会内聊天</ChatTitle>
+            <ChatDescription>
+              文字和图片消息仅在当前房间存活期间内同步，不做历史保存。
+            </ChatDescription>
+          </ChatHeader>
+
+          <ChatScroll>
+            {chatMessages.length === 0 ? (
+              <EmptyChat>还没有会内消息。可以先发一条文字或图片。</EmptyChat>
+            ) : (
+              chatMessages.map((message) => {
+                const isMine = Boolean(currentPeerId && message.senderPeerId === currentPeerId)
+                const senderLabel = resolveMessageSenderLabel(message, participantCards)
+                return (
+                  <MessageRow key={message.messageId} $mine={isMine}>
+                    <MessageBubble $mine={isMine}>
+                      <MessageAuthor>{isMine ? '我' : senderLabel}</MessageAuthor>
+                      {message.kind === 'image' && message.imageDataUrl ? (
+                        <MessageImage
+                          src={message.imageDataUrl}
+                          alt="聊天图片"
+                          onClick={() => setPreviewImageUrl(message.imageDataUrl)}
+                        />
+                      ) : null}
+                      {message.text ? <MessageText>{message.text}</MessageText> : null}
+                      <MessageTime $mine={isMine}>
+                        {formatDateTime24(message.createdAt)}
+                      </MessageTime>
+                    </MessageBubble>
+                  </MessageRow>
+                )
+              })
+            )}
+            <div ref={messageEndRef} />
+          </ChatScroll>
+
+          <ChatComposer>
+            <ChatInput
+              value={draftText}
+              onChange={(event) => setDraftText(event.target.value)}
+              onKeyDown={handleChatKeyDown}
+              placeholder="输入消息，Enter 发送，Shift + Enter 换行。"
+              disabled={!canLeaveMeeting}
+            />
+            <ChatComposerActions>
+              <ChatActionGroup>
+                <ComposerButton type="button" onClick={handlePickImage} disabled={!canLeaveMeeting}>
+                  发送图片
+                </ComposerButton>
+                <HiddenFileInput
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                />
+                <MetaPill>图片上限 2MB</MetaPill>
+              </ChatActionGroup>
+              <ComposerButton
+                type="button"
+                $primary
+                onClick={handleSendText}
+                disabled={!canLeaveMeeting || !draftText.trim()}
+              >
+                发送消息
+              </ComposerButton>
+            </ChatComposerActions>
+          </ChatComposer>
+        </ChatPanel>
+      </Layout>
+
+      {previewImageUrl ? (
+        <ImagePreviewOverlay onClick={() => setPreviewImageUrl('')}>
+          <ImagePreviewFrame
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setPreviewImageUrl('')
+            }}
+          >
+            <img src={previewImageUrl} alt="聊天图片预览" />
+          </ImagePreviewFrame>
+        </ImagePreviewOverlay>
+      ) : null}
     </Page>
   )
 }
 
 MeetingPanel.propTypes = {
-  roomState: PropTypes.string.isRequired,
-  shareState: PropTypes.string.isRequired,
   connectionLabel: PropTypes.string.isRequired,
+  canLeaveMeeting: PropTypes.bool.isRequired,
   microphoneEnabled: PropTypes.bool.isRequired,
   microphoneState: PropTypes.string.isRequired,
-  statusMessage: PropTypes.string.isRequired,
+  activeRoomId: PropTypes.string.isRequired,
+  currentPeerId: PropTypes.string.isRequired,
   roomInfo: PropTypes.shape({
     roomId: PropTypes.string,
     role: PropTypes.string,
-    viewerCount: PropTypes.number,
     hostPresent: PropTypes.bool,
-    shareActive: PropTypes.bool
+    shareActive: PropTypes.bool,
+    peerId: PropTypes.string,
+    participants: PropTypes.arrayOf(
+      PropTypes.shape({
+        peerId: PropTypes.string.isRequired,
+        role: PropTypes.string.isRequired,
+        connected: PropTypes.bool.isRequired,
+        audioEnabled: PropTypes.bool
+      })
+    )
   }),
-  joinRoomId: PropTypes.string.isRequired,
-  setJoinRoomId: PropTypes.func.isRequired,
   localVideoRef: PropTypes.shape({ current: PropTypes.any }).isRequired,
   remoteVideoRef: PropTypes.shape({ current: PropTypes.any }).isRequired,
-  isJoined: PropTypes.bool.isRequired,
+  localPreviewStream: PropTypes.any,
+  remotePreviewStream: PropTypes.any,
   isSharing: PropTypes.bool.isRequired,
   isHost: PropTypes.bool.isRequired,
+  isRoomOwner: PropTypes.bool.isRequired,
   isViewer: PropTypes.bool.isRequired,
-  onCreateRoom: PropTypes.func.isRequired,
-  onJoinRoom: PropTypes.func.isRequired,
+  pickerOpen: PropTypes.bool.isRequired,
+  pickerLoading: PropTypes.bool.isRequired,
+  pickerSources: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      name: PropTypes.string.isRequired,
+      type: PropTypes.string.isRequired,
+      thumbnailDataUrl: PropTypes.string
+    })
+  ).isRequired,
+  pickerSelectedSourceId: PropTypes.string.isRequired,
+  chatMessages: PropTypes.arrayOf(
+    PropTypes.shape({
+      messageId: PropTypes.string.isRequired,
+      senderPeerId: PropTypes.string.isRequired,
+      senderRole: PropTypes.string.isRequired,
+      kind: PropTypes.string.isRequired,
+      text: PropTypes.string,
+      imageDataUrl: PropTypes.string,
+      createdAt: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired
+    })
+  ).isRequired,
   onLeaveRoom: PropTypes.func.isRequired,
+  onCloseMeeting: PropTypes.func.isRequired,
   onOpenSourcePicker: PropTypes.func.isRequired,
   onStopSharing: PropTypes.func.isRequired,
-  onCopyRoomId: PropTypes.func.isRequired,
-  onToggleMicrophone: PropTypes.func.isRequired
+  onToggleMicrophone: PropTypes.func.isRequired,
+  onSelectShareSource: PropTypes.func.isRequired,
+  onCloseSharePopover: PropTypes.func.isRequired,
+  onConfirmShareSource: PropTypes.func.isRequired,
+  onSendChatText: PropTypes.func.isRequired,
+  onSendChatImage: PropTypes.func.isRequired
+}
+
+MeetingPanel.defaultProps = {
+  roomInfo: null,
+  localPreviewStream: null,
+  remotePreviewStream: null
 }
 
 export default MeetingPanel

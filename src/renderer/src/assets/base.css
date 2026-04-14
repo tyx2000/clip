@@ -1,5 +1,5 @@
 :root {
-  --line-soft: #fafaf5;
+  --line-soft: #cfd8e3;
   --color-bg: #ffffff;
   --color-bg-2: #f7f7f5;
   --color-text: #111111;
@@ -22,6 +22,7 @@
 }
 
 :root[data-theme='light'] {
+  --line-soft: #cfd8e3;
   --color-bg: #ffffff;
   --color-bg-2: #f7f7f5;
   --color-text: #111111;
@@ -44,6 +45,7 @@
 }
 
 :root[data-theme='dark'] {
+  --line-soft: #364152;
   --color-bg: #0a0a0a;
   --color-bg-2: #111111;
   --color-text: #fafaf5;
@@ -66,6 +68,7 @@
 }
 
 :root[data-theme='blue'] {
+  --line-soft: #bfd0ea;
   --color-bg: #f5f9ff;
   --color-bg-2: #eaf2ff;
   --color-text: #0f172a;
@@ -101,7 +104,7 @@ body,
 body {
   margin: 0;
   color: var(--color-text);
-  background: radial-gradient(circle at 20% 0%, var(--color-bg-2), var(--color-bg) 52%);
+  background: var(--color-bg);
   font-family: 'Inter', 'Segoe UI', sans-serif;
 }
 

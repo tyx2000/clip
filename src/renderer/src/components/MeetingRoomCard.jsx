@@ -2,13 +2,21 @@ import PropTypes from 'prop-types'
 import styled from 'styled-components'
 import { formatDateTime24, middleEllipsis } from '../utils/shareUtils'
 
-const Card = styled.article`
+const Card = styled.button`
   border: 1px solid var(--line-soft);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 12px;
   background: var(--color-block-content);
   display: grid;
   gap: 12px;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  transition: border-color 140ms ease;
+
+  &:hover {
+    border-color: #2563eb;
+  }
 `
 
 const Header = styled.div`
@@ -38,7 +46,7 @@ const Pills = styled.div`
 `
 
 const Pill = styled.span`
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 5px 9px;
   border: 1px solid var(--line-soft);
   background: ${({ $active }) => ($active ? '#eff6ff' : 'var(--color-block-input)')};
@@ -47,31 +55,9 @@ const Pill = styled.span`
   white-space: nowrap;
 `
 
-const Actions = styled.div`
-  display: flex;
-  gap: 8px;
-`
-
-const Button = styled.button`
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  padding: 8px 10px;
-  background: var(--color-block-input);
-  color: var(--color-text);
-  font-weight: 600;
-  cursor: pointer;
-  min-width: 88px;
-`
-
-const PrimaryButton = styled(Button)`
-  border: none;
-  background: var(--color-block-button);
-  color: #ffffff;
-`
-
-function MeetingRoomCard({ item, onOpen, onDelete }) {
+function MeetingRoomCard({ item, onOpen }) {
   return (
-    <Card>
+    <Card type="button" onClick={() => onOpen(item)}>
       <Header>
         <Title title={item.roomId}>{middleEllipsis(item.roomId, 26)}</Title>
         <Meta>
@@ -86,15 +72,6 @@ function MeetingRoomCard({ item, onOpen, onDelete }) {
         </Pill>
         <Pill>观众数 {Number(item.viewerCount || 0)}</Pill>
       </Pills>
-
-      <Actions>
-        <PrimaryButton type="button" onClick={() => onOpen(item)}>
-          进入会议
-        </PrimaryButton>
-        <Button type="button" onClick={() => onDelete(item.roomId)}>
-          删除
-        </Button>
-      </Actions>
     </Card>
   )
 }
@@ -108,8 +85,7 @@ MeetingRoomCard.propTypes = {
     shareActive: PropTypes.bool,
     viewerCount: PropTypes.number
   }).isRequired,
-  onOpen: PropTypes.func.isRequired,
-  onDelete: PropTypes.func.isRequired
+  onOpen: PropTypes.func.isRequired
 }
 
 export default MeetingRoomCard
