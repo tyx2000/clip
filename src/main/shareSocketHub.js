@@ -3,12 +3,18 @@ import WebSocket from 'ws'
 const ROOMS_EVENT_CHANNEL = 'onScreenShareRoomsSnapshot'
 const MEETING_EVENT_CHANNEL = 'onScreenShareMeetingSocketEvent'
 
+// 主进程只负责应用级 socket 生命周期：
+// 1. 房间列表 WS 是全局单例，避免多个窗口重复订阅同一份快照。
+// 2. 会议信令 WS 按窗口持有，负责 hello/offer/answer/ice/leave 这类控制消息。
+// 3. 主进程不持有 RTCPeerConnection、MediaStream、DataChannel，这些都留在 renderer，
+//    否则会把浏览器媒体对象和 Electron 进程边界强行搅在一起。
 const roomListSubscribers = new Map()
 let roomListSocket = null
 let roomListReconnectTimer = null
 let latestRoomSnapshot = []
 let hasReceivedRoomSnapshot = false
 
+// key 为 webContents.id。这里保存的是“窗口对应的信令 socket”，不是媒体连接本身。
 const meetingSockets = new Map()
 
 function buildWebSocketUrl(origin) {

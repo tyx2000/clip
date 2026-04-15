@@ -4,18 +4,18 @@ import { formatDateTime24, middleEllipsis } from '../utils/shareUtils'
 
 const Card = styled.button`
   border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 12px;
+  border-radius: 5px;
+  padding: 10px;
   background: var(--color-block-content);
   display: grid;
-  gap: 12px;
+  gap: 10px;
   text-align: left;
   width: 100%;
   cursor: pointer;
   transition: border-color 140ms ease;
 
   &:hover {
-    border-color: #2563eb;
+    border-color: #bfd0ea;
   }
 `
 
@@ -42,16 +42,15 @@ const Meta = styled.p`
 const Pills = styled.div`
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 `
 
 const Pill = styled.span`
-  border-radius: 8px;
-  padding: 5px 9px;
-  border: 1px solid var(--line-soft);
-  background: ${({ $active }) => ($active ? '#eff6ff' : 'var(--color-block-input)')};
+  border-radius: 5px;
+  padding: 4px 8px;
+  background: ${({ $active }) => ($active ? '#eef5ff' : '#f4f7fa')};
   color: ${({ $active }) => ($active ? '#1d4ed8' : 'var(--color-text-soft)')};
-  font-size: 12px;
+  font-size: 11px;
   white-space: nowrap;
 `
 

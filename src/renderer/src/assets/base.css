@@ -1,5 +1,5 @@
 :root {
-  --line-soft: #cfd8e3;
+  --line-soft: #dfe6ee;
   --color-bg: #ffffff;
   --color-bg-2: #f7f7f5;
   --color-text: #111111;
@@ -22,7 +22,7 @@
 }
 
 :root[data-theme='light'] {
-  --line-soft: #cfd8e3;
+  --line-soft: #dfe6ee;
   --color-bg: #ffffff;
   --color-bg-2: #f7f7f5;
   --color-text: #111111;
@@ -68,7 +68,7 @@
 }
 
 :root[data-theme='blue'] {
-  --line-soft: #bfd0ea;
+  --line-soft: #d6e1f2;
   --color-bg: #f5f9ff;
   --color-bg-2: #eaf2ff;
   --color-text: #0f172a;
@@ -170,7 +170,7 @@ select {
 *::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
   border-radius: 999px;
-  border: 2px solid var(--line-soft);
+  border: 2px solid transparent;
 }
 
 *::-webkit-scrollbar-thumb:hover {

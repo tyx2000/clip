@@ -17,10 +17,8 @@ function createEventSubscription(channel, listener) {
 const api = {
   getScreenShareSources: () => ipcRenderer.invoke('getScreenShareSources'),
   setScreenShareSource: (payload) => ipcRenderer.invoke('setScreenShareSource', payload),
-  ensureScreenShareServer: () => ipcRenderer.invoke('ensureScreenShareServer'),
   createScreenShareRoom: () => ipcRenderer.invoke('createScreenShareRoom'),
   joinScreenShareRoom: (payload) => ipcRenderer.invoke('joinScreenShareRoom', payload),
-  getScreenShareRoom: (payload) => ipcRenderer.invoke('getScreenShareRoom', payload),
   subscribeScreenShareRooms: () => ipcRenderer.invoke('subscribeScreenShareRooms'),
   unsubscribeScreenShareRooms: () => ipcRenderer.send('unsubscribeScreenShareRooms'),
   onScreenShareRoomsSnapshot: (listener) => createEventSubscription(ROOMS_EVENT_CHANNEL, listener),

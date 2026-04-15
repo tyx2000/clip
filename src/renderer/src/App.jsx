@@ -7,12 +7,59 @@ import { useScreenShareController } from './hooks/useScreenShareController'
 import { ensureCurrentUserId } from './utils/currentUserStorage'
 import { readMeetingRooms, upsertMeetingRoom, writeMeetingRooms } from './utils/meetingRoomsStorage'
 
+function getTitleBarFallbackHeight(platform) {
+  if (platform === 'darwin') {
+    return 28
+  }
+  if (platform === 'win32') {
+    return 32
+  }
+  return 34
+}
+
+function resolveTitleBarHeight(platform, rawHeight) {
+  const parsed = Number(rawHeight)
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed
+  }
+  return getTitleBarFallbackHeight(platform)
+}
+
 const Page = styled.main`
   height: 100%;
-  padding: 20px;
+  padding: calc(env(titlebar-area-height, ${({ $titleBarHeight }) => `${$titleBarHeight}px`}) + 8px)
+    20px 20px;
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 12px;
+`
+
+const WindowTitleBar = styled.header`
+  position: fixed;
+  top: env(titlebar-area-y, 0px);
+  left: env(titlebar-area-x, 0px);
+  width: env(titlebar-area-width, 100%);
+  height: env(titlebar-area-height, ${({ $titleBarHeight }) => `${$titleBarHeight}px`});
+  background: #ffffff;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  -webkit-app-region: drag;
+  user-select: none;
+  z-index: 100;
+`
+
+const WindowTitleText = styled.p`
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  text-align: center;
+  pointer-events: none;
 `
 
 const TopBar = styled.section`
@@ -20,10 +67,9 @@ const TopBar = styled.section`
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px;
-  border-radius: 10px;
-  border: 1px solid var(--line-soft);
-  background: var(--color-block-card-strong);
+  padding: 12px;
+  border-radius: 5px;
+  background: #f9fbfd;
 `
 
 const TitleGroup = styled.div`
@@ -37,33 +83,10 @@ const Title = styled.h1`
   line-height: 1.2;
 `
 
-const Subtitle = styled.p`
-  margin: 0;
-  color: var(--color-text-soft);
-  font-size: 13px;
-`
-
 const StatusText = styled.p`
   margin: 0;
   color: var(--color-text-soft);
   font-size: 12px;
-`
-
-const MetricsRow = styled.div`
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-`
-
-const MetricPill = styled.span`
-  border-radius: 8px;
-  padding: 5px 9px;
-  border: 1px solid var(--line-soft);
-  background: var(--color-block-input);
-  color: var(--color-text-soft);
-  font-size: 12px;
-  line-height: 1;
-  white-space: nowrap;
 `
 
 const TopActions = styled.div`
@@ -75,13 +98,14 @@ const TopActions = styled.div`
 `
 
 const MeetingButton = styled.button`
-  border-radius: 8px;
-  padding: 9px 12px;
-  min-width: 112px;
-  border: 1px solid #0f172a;
+  border-radius: 5px;
+  padding: 8px 11px;
+  min-width: 92px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
   background: var(--color-block-button);
   color: #ffffff;
   font-weight: 600;
+  font-size: 13px;
   cursor: pointer;
 
   &:disabled {
@@ -91,13 +115,13 @@ const MeetingButton = styled.button`
 `
 
 const ListWrap = styled.section`
-  border-radius: 10px;
+  border-radius: 5px;
   border: 1px solid var(--line-soft);
   background: var(--color-block-card);
-  padding: 12px;
+  padding: 10px;
   display: grid;
   grid-template-rows: auto 1fr;
-  gap: 12px;
+  gap: 10px;
 `
 
 const ListHeader = styled.div`
@@ -146,7 +170,7 @@ function parseInitialSession(searchParams) {
   }
 }
 
-function MeetingWindow({ currentUserId, initialRoomId, initialSessionPayload }) {
+function MeetingWindow({ currentUserId, initialRoomId, initialSessionPayload, titleBarHeight }) {
   const shareController = useScreenShareController({
     isMeetingWindow: true,
     initialRoomId,
@@ -165,6 +189,7 @@ function MeetingWindow({ currentUserId, initialRoomId, initialSessionPayload }) 
 
   return (
     <MeetingPanel
+      titleBarHeight={titleBarHeight}
       connectionLabel={shareController.connectionLabel}
       canLeaveMeeting={shareController.canLeaveMeeting}
       microphoneEnabled={shareController.microphoneEnabled}
@@ -202,6 +227,7 @@ function MeetingWindow({ currentUserId, initialRoomId, initialSessionPayload }) 
 MeetingWindow.propTypes = {
   currentUserId: PropTypes.string.isRequired,
   initialRoomId: PropTypes.string.isRequired,
+  titleBarHeight: PropTypes.number.isRequired,
   initialSessionPayload: PropTypes.shape({
     roomId: PropTypes.string,
     role: PropTypes.string,
@@ -217,7 +243,7 @@ MeetingWindow.defaultProps = {
   initialSessionPayload: null
 }
 
-function LobbyWindow({ currentUserId }) {
+function LobbyWindow({ currentUserId, titleBarHeight }) {
   const [rooms, setRooms] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [statusMessage, setStatusMessage] = useState(
@@ -226,7 +252,6 @@ function LobbyWindow({ currentUserId }) {
   const [isCreating, setIsCreating] = useState(false)
   const latestRoomSnapshotRef = useRef([])
   const hasReceivedSnapshotRef = useRef(false)
-
   const mergeBackendRooms = useCallback((remoteRooms) => {
     const roomMap = new Map(
       (Array.isArray(remoteRooms) ? remoteRooms : [])
@@ -426,15 +451,15 @@ function LobbyWindow({ currentUserId }) {
   )
 
   return (
-    <Page>
+    <Page $titleBarHeight={titleBarHeight}>
+      <WindowTitleBar $titleBarHeight={titleBarHeight}>
+        <WindowTitleText>会议</WindowTitleText>
+      </WindowTitleBar>
+
       <TopBar>
         <TitleGroup>
           <Title>会议</Title>
-          <Subtitle>点击“会议”创建新房间，已创建房间可直接重新进入。</Subtitle>
           <StatusText>{statusMessage}</StatusText>
-          <MetricsRow>
-            <MetricPill>房间数 {rooms.length}</MetricPill>
-          </MetricsRow>
         </TitleGroup>
 
         <TopActions>
@@ -468,13 +493,19 @@ function LobbyWindow({ currentUserId }) {
 }
 
 LobbyWindow.propTypes = {
-  currentUserId: PropTypes.string.isRequired
+  currentUserId: PropTypes.string.isRequired,
+  titleBarHeight: PropTypes.number.isRequired
 }
 
 function App() {
   const params = useMemo(() => new URLSearchParams(window.location.search), [])
   const currentUserId = useMemo(() => ensureCurrentUserId(), [])
   const initialRoomId = params.get('roomId') || ''
+  const meetingPlatform = params.get('platform') || ''
+  const titleBarHeight = useMemo(
+    () => resolveTitleBarHeight(meetingPlatform, params.get('titleBarHeight')),
+    [meetingPlatform, params]
+  )
   const initialSessionPayload = parseInitialSession(params)
   const isMeetingWindow = params.get('meeting') === '1'
 
@@ -484,11 +515,12 @@ function App() {
         currentUserId={currentUserId}
         initialRoomId={initialRoomId}
         initialSessionPayload={initialSessionPayload}
+        titleBarHeight={titleBarHeight}
       />
     )
   }
 
-  return <LobbyWindow currentUserId={currentUserId} />
+  return <LobbyWindow currentUserId={currentUserId} titleBarHeight={titleBarHeight} />
 }
 
 export default App

@@ -5,28 +5,57 @@ import { formatDateTime24, middleEllipsis } from '../utils/shareUtils'
 
 const Page = styled.main`
   height: 100%;
-  padding: 14px;
+  padding: calc(env(titlebar-area-height, ${({ $titleBarHeight }) => `${$titleBarHeight}px`}) + 8px)
+    14px 14px;
   display: grid;
   background: #eef3f8;
 `
 
-const MetaPill = styled.span`
-  border-radius: 8px;
-  padding: 7px 10px;
-  border: 1px solid ${({ $accent }) => ($accent ? '#1d4ed8' : 'var(--line-soft)')};
-  background: ${({ $accent }) => ($accent ? '#dbeafe' : '#ffffff')};
-  color: ${({ $accent }) => ($accent ? '#1d4ed8' : 'var(--color-text-soft)')};
+const WindowTitleBar = styled.header`
+  position: fixed;
+  top: env(titlebar-area-y, 0px);
+  left: env(titlebar-area-x, 0px);
+  width: env(titlebar-area-width, 100%);
+  height: env(titlebar-area-height, ${({ $titleBarHeight }) => `${$titleBarHeight}px`});
+  background: #ffffff;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  -webkit-app-region: drag;
+  user-select: none;
+  z-index: 100;
+`
+
+const WindowTitleText = styled.p`
+  margin: 0;
   font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  text-align: center;
+  pointer-events: none;
+`
+
+const MetaPill = styled.span`
+  border-radius: 5px;
+  padding: 5px 8px;
+  background: ${({ $accent }) => ($accent ? '#eaf2ff' : '#f5f8fb')};
+  color: ${({ $accent }) => ($accent ? '#1d4ed8' : 'var(--color-text-soft)')};
+  font-size: 11px;
   white-space: nowrap;
 `
 
 const GhostButton = styled.button`
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 10px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 5px;
+  padding: 8px 12px;
   background: #ffffff;
   color: var(--color-text);
   font-weight: 600;
+  font-size: 13px;
   cursor: pointer;
 
   &:disabled {
@@ -48,9 +77,9 @@ const Layout = styled.section`
 
 const StagePanel = styled.section`
   min-height: 0;
-  border-radius: 10px;
+  border-radius: 5px;
   border: 1px solid var(--line-soft);
-  background: #f7fbff;
+  background: #f8fbfd;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
@@ -59,19 +88,18 @@ const StagePanel = styled.section`
 const StageWrap = styled.div`
   position: relative;
   min-height: 0;
-  padding: 14px;
-  background: #e8eff7;
+  padding: 12px;
+  background: #edf3f8;
 `
 
 const StageFrame = styled.div`
   width: 100%;
   height: 100%;
   min-height: 420px;
-  border-radius: 10px;
+  border-radius: 5px;
   overflow: hidden;
   position: relative;
   background: #0f172a;
-  border: 1px solid #334155;
 
   @media (max-width: 980px) {
     min-height: 360px;
@@ -158,9 +186,9 @@ const StageHint = styled.div`
 const StageHintText = styled.p`
   margin: 0;
   max-width: 560px;
-  padding: 10px 14px;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  padding: 8px 12px;
+  border-radius: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(15, 23, 42, 0.9);
   color: rgba(226, 232, 240, 0.92);
   font-size: 12px;
@@ -168,8 +196,8 @@ const StageHintText = styled.p`
 `
 
 const ControlsBar = styled.div`
-  border-top: 1px solid var(--line-soft);
-  padding: 14px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  padding: 12px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
@@ -191,23 +219,24 @@ const ControlsBlock = styled.div`
 
 const ControlButton = styled.button`
   border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 12px 16px;
-  min-width: 122px;
+  border-radius: 5px;
+  padding: 9px 12px;
+  min-width: 96px;
   background: ${({ $variant }) => {
     if ($variant === 'danger') return '#dc2626'
     if ($variant === 'primary') return '#2563eb'
     if ($variant === 'muted') return '#0f172a'
-    return '#f8fafc'
+    return '#f5f7fa'
   }};
   color: ${({ $variant }) => ($variant === 'secondary' ? '#0f172a' : '#ffffff')};
   font-weight: 700;
+  font-size: 13px;
   cursor: pointer;
   border-color: ${({ $variant }) => {
-    if ($variant === 'danger') return '#991b1b'
-    if ($variant === 'primary') return '#1e40af'
-    if ($variant === 'muted') return '#0f172a'
-    return 'var(--line-soft)'
+    if ($variant === 'danger') return 'rgba(153, 27, 27, 0.3)'
+    if ($variant === 'primary') return 'rgba(30, 64, 175, 0.24)'
+    if ($variant === 'muted') return 'rgba(15, 23, 42, 0.18)'
+    return 'rgba(15, 23, 42, 0.08)'
   }};
 
   &:disabled {
@@ -228,7 +257,7 @@ const ShareStageOverlay = styled.div`
 const ShareStageCard = styled.div`
   width: min(860px, 100%);
   max-height: 100%;
-  border-radius: 10px;
+  border-radius: 5px;
   border: 1px solid var(--line-soft);
   background: #ffffff;
   overflow: hidden;
@@ -237,8 +266,8 @@ const ShareStageCard = styled.div`
 `
 
 const ShareStageHeader = styled.div`
-  padding: 14px;
-  border-bottom: 1px solid var(--line-soft);
+  padding: 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -271,9 +300,9 @@ const ShareStageClose = styled.button`
 `
 
 const ShareStageBody = styled.div`
-  padding: 14px;
+  padding: 12px;
   display: grid;
-  gap: 14px;
+  gap: 12px;
   min-height: 0;
   overflow: auto;
 `
@@ -281,24 +310,24 @@ const ShareStageBody = styled.div`
 const ShareSourcesGrid = styled.div`
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 12px;
+  gap: 10px;
 `
 
 const ShareSourceCard = styled.button`
-  border: ${({ $selected }) => ($selected ? '2px solid #2563eb' : '1px solid var(--line-soft)')};
-  border-radius: 8px;
-  background: ${({ $selected }) => ($selected ? '#eff6ff' : '#ffffff')};
-  padding: 10px;
+  border: 1px solid ${({ $selected }) => ($selected ? '#bfd0ea' : 'var(--line-soft)')};
+  border-radius: 5px;
+  background: ${({ $selected }) => ($selected ? '#eef5ff' : '#ffffff')};
+  padding: 9px;
   text-align: left;
   display: grid;
-  gap: 8px;
+  gap: 7px;
   cursor: pointer;
 `
 
 const ShareThumb = styled.div`
   width: 100%;
   aspect-ratio: 16 / 9;
-  border-radius: 6px;
+  border-radius: 5px;
   overflow: hidden;
   background: #0f172a;
 
@@ -339,7 +368,7 @@ const ShareStageStatus = styled.p`
 
 const ChatPanel = styled.section`
   min-height: 0;
-  border-radius: 10px;
+  border-radius: 5px;
   border: 1px solid var(--line-soft);
   background: #ffffff;
   display: grid;
@@ -348,8 +377,8 @@ const ChatPanel = styled.section`
 `
 
 const ChatHeader = styled.div`
-  padding: 14px;
-  border-bottom: 1px solid var(--line-soft);
+  padding: 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
   display: grid;
   gap: 6px;
 `
@@ -368,11 +397,11 @@ const ChatDescription = styled.p`
 const ChatScroll = styled.div`
   min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 12px;
   display: grid;
   align-content: start;
-  gap: 12px;
-  background: #f8fbff;
+  gap: 10px;
+  background: #fafcfe;
 `
 
 const EmptyChat = styled.p`
@@ -390,12 +419,12 @@ const MessageRow = styled.div`
 const MessageBubble = styled.div`
   max-width: min(78%, 320px);
   display: grid;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: 7px;
+  padding: 10px 12px;
   border-radius: ${({ $mine }) => ($mine ? '8px 8px 2px 8px' : '8px 8px 8px 2px')};
-  background: ${({ $mine }) => ($mine ? '#2563eb' : '#ffffff')};
+  background: ${({ $mine }) => ($mine ? '#2563eb' : '#f9fbfd')};
   color: ${({ $mine }) => ($mine ? '#ffffff' : 'var(--color-text)')};
-  border: 1px solid ${({ $mine }) => ($mine ? '#1e40af' : 'var(--line-soft)')};
+  border: 1px solid ${({ $mine }) => ($mine ? 'rgba(30, 64, 175, 0.22)' : 'rgba(15, 23, 42, 0.06)')};
 `
 
 const MessageAuthor = styled.p`
@@ -417,7 +446,7 @@ const MessageText = styled.p`
 const MessageImage = styled.img`
   width: 100%;
   max-width: 260px;
-  border-radius: 6px;
+  border-radius: 5px;
   display: block;
   cursor: zoom-in;
 `
@@ -431,20 +460,20 @@ const MessageTime = styled.p`
 `
 
 const ChatComposer = styled.div`
-  padding: 14px;
-  border-top: 1px solid var(--line-soft);
+  padding: 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
   background: #ffffff;
   display: grid;
-  gap: 10px;
+  gap: 8px;
 `
 
 const ChatInput = styled.textarea`
   width: 100%;
-  min-height: 110px;
+  min-height: 88px;
   resize: none;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 5px;
+  padding: 10px 12px;
   background: #ffffff;
   color: var(--color-text);
   font: inherit;
@@ -466,12 +495,14 @@ const ChatActionGroup = styled.div`
 `
 
 const ComposerButton = styled.button`
-  border: 1px solid ${({ $primary }) => ($primary ? '#1e40af' : 'var(--line-soft)')};
-  border-radius: 8px;
-  padding: 10px 14px;
-  background: ${({ $primary }) => ($primary ? '#2563eb' : '#e2e8f0')};
+  border: 1px solid
+    ${({ $primary }) => ($primary ? 'rgba(30, 64, 175, 0.24)' : 'rgba(15, 23, 42, 0.08)')};
+  border-radius: 5px;
+  padding: 8px 12px;
+  background: ${({ $primary }) => ($primary ? '#2563eb' : '#eef2f6')};
   color: ${({ $primary }) => ($primary ? '#ffffff' : '#0f172a')};
   font-weight: 700;
+  font-size: 13px;
   cursor: pointer;
 
   &:disabled {
@@ -504,7 +535,7 @@ const ImagePreviewFrame = styled.button`
     max-width: min(90vw, 1200px);
     max-height: 88vh;
     display: block;
-    border-radius: 10px;
+    border-radius: 5px;
     border: 1px solid rgba(148, 163, 184, 0.45);
   }
 `
@@ -519,17 +550,56 @@ function hashColor(input) {
   return palette[hash % palette.length]
 }
 
-function buildParticipantCards(roomInfo) {
+function buildParticipantCards(roomInfo, currentPeerId, isHost, isRoomOwner) {
+  const participantMap = new Map()
   const participants = Array.isArray(roomInfo?.participants) ? roomInfo.participants : []
   let viewerIndex = 0
 
-  return participants.map((participant) => {
-    const isHost = participant.role === 'host'
-    viewerIndex += isHost ? 0 : 1
+  for (const participant of participants) {
+    if (!participant?.peerId) {
+      continue
+    }
+    participantMap.set(participant.peerId, participant)
+  }
+
+  const inferredHostPeerId =
+    participants.find((participant) => participant?.role === 'host')?.peerId ||
+    (roomInfo?.role === 'host' ? roomInfo?.peerId || 'host' : '') ||
+    (isHost || isRoomOwner ? currentPeerId || roomInfo?.peerId || 'host' : '') ||
+    'host'
+
+  if (
+    inferredHostPeerId &&
+    ![...participantMap.values()].some((participant) => participant.role === 'host') &&
+    (Boolean(roomInfo?.hostPresent) || roomInfo?.role === 'host' || isHost || isRoomOwner)
+  ) {
+    participantMap.set(inferredHostPeerId, {
+      peerId: inferredHostPeerId,
+      role: 'host',
+      connected:
+        typeof roomInfo?.hostPresent === 'boolean'
+          ? roomInfo.hostPresent
+          : Boolean(roomInfo?.role === 'host' || isHost || isRoomOwner),
+      audioEnabled: false
+    })
+  }
+
+  if (currentPeerId && roomInfo?.role === 'viewer' && !participantMap.has(currentPeerId)) {
+    participantMap.set(currentPeerId, {
+      peerId: currentPeerId,
+      role: 'viewer',
+      connected: true,
+      audioEnabled: false
+    })
+  }
+
+  return [...participantMap.values()].map((participant) => {
+    const isHostParticipant = participant.role === 'host'
+    viewerIndex += isHostParticipant ? 0 : 1
     return {
       ...participant,
-      label: isHost ? '主持人' : `观${viewerIndex}`,
-      avatarText: isHost ? '主' : String(viewerIndex),
+      label: isHostParticipant ? '主持人' : `观${viewerIndex}`,
+      avatarText: isHostParticipant ? '主' : String(viewerIndex),
       color: hashColor(participant.peerId),
       audioEnabled: Boolean(participant.audioEnabled)
     }
@@ -547,6 +617,7 @@ function resolveMessageSenderLabel(message, participants) {
 }
 
 function MeetingPanel({
+  titleBarHeight,
   connectionLabel,
   canLeaveMeeting,
   microphoneEnabled,
@@ -582,10 +653,11 @@ function MeetingPanel({
   const messageEndRef = useRef(null)
   const [draftText, setDraftText] = useState('')
   const [previewImageUrl, setPreviewImageUrl] = useState('')
-  const participantCards = useMemo(() => buildParticipantCards(roomInfo), [roomInfo])
+  const participantCards = useMemo(
+    () => buildParticipantCards(roomInfo, currentPeerId, isHost, isRoomOwner),
+    [currentPeerId, isHost, isRoomOwner, roomInfo]
+  )
   const canShowShareControls = isHost || isRoomOwner
-  // Host should always see local preview once a display stream exists, even if remote share-state
-  // synchronization is slightly behind.
   const hasLocalSharePreview = Boolean(localPreviewStream)
   const showSharedVideo =
     hasLocalSharePreview || (isHost ? isSharing : Boolean(roomInfo?.shareActive))
@@ -601,6 +673,7 @@ function MeetingPanel({
 
   const microphoneLabel =
     microphoneState === 'requesting' ? '开麦中...' : microphoneEnabled ? '麦克风已开' : '静音中'
+  const meetingTitle = `会议 · ${middleEllipsis(roomInfo?.roomId || activeRoomId || '--', 28)}`
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ block: 'end' })
@@ -666,7 +739,11 @@ function MeetingPanel({
   }
 
   return (
-    <Page>
+    <Page $titleBarHeight={titleBarHeight}>
+      <WindowTitleBar $titleBarHeight={titleBarHeight}>
+        <WindowTitleText>{meetingTitle}</WindowTitleText>
+      </WindowTitleBar>
+
       <Layout>
         <StagePanel>
           <StageWrap>
@@ -683,31 +760,21 @@ function MeetingPanel({
               {!showSharedVideo ? (
                 <ParticipantStage>
                   <ParticipantGrid>
-                    {participantCards.length > 0 ? (
-                      participantCards.map((participant) => (
-                        <ParticipantCard
-                          key={participant.peerId}
-                          $connected={Boolean(participant.connected)}
-                        >
-                          <ParticipantAvatar $color={participant.color}>
-                            {participant.avatarText}
-                          </ParticipantAvatar>
-                          <ParticipantName>{participant.label}</ParticipantName>
-                          <ParticipantMeta>
-                            {participant.connected ? '在线' : '离线'}
-                          </ParticipantMeta>
-                          <ParticipantAudioBadge $active={participant.audioEnabled}>
-                            {participant.audioEnabled ? '已开麦' : '静音'}
-                          </ParticipantAudioBadge>
-                        </ParticipantCard>
-                      ))
-                    ) : (
-                      <ParticipantCard $connected>
-                        <ParticipantAvatar $color="#2563eb">会</ParticipantAvatar>
-                        <ParticipantName>等待参会人</ParticipantName>
-                        <ParticipantMeta>房间建立后头像会显示在这里</ParticipantMeta>
+                    {participantCards.map((participant) => (
+                      <ParticipantCard
+                        key={participant.peerId}
+                        $connected={Boolean(participant.connected)}
+                      >
+                        <ParticipantAvatar $color={participant.color}>
+                          {participant.avatarText}
+                        </ParticipantAvatar>
+                        <ParticipantName>{participant.label}</ParticipantName>
+                        <ParticipantMeta>{participant.connected ? '在线' : '离线'}</ParticipantMeta>
+                        <ParticipantAudioBadge $active={participant.audioEnabled}>
+                          {participant.audioEnabled ? '已开麦' : '静音'}
+                        </ParticipantAudioBadge>
                       </ParticipantCard>
-                    )}
+                    ))}
                   </ParticipantGrid>
                 </ParticipantStage>
               ) : null}
@@ -926,6 +993,7 @@ function MeetingPanel({
 }
 
 MeetingPanel.propTypes = {
+  titleBarHeight: PropTypes.number.isRequired,
   connectionLabel: PropTypes.string.isRequired,
   canLeaveMeeting: PropTypes.bool.isRequired,
   microphoneEnabled: PropTypes.bool.isRequired,

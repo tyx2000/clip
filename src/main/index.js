@@ -18,8 +18,7 @@ const {
   getScreenShareServerOrigin,
   startScreenShareServer,
   createRoomLocal,
-  joinRoomLocal,
-  getRoomSummaryLocal
+  joinRoomLocal
 } = require('../../server/screenShareServer')
 
 let screenShareServerHandle = null
@@ -37,14 +36,6 @@ app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.electron.clip-share')
   registerShareHandlers(__dirname)
   await ensureScreenShareServer()
-
-  ipcMain.handle('ensureScreenShareServer', async () => {
-    await ensureScreenShareServer()
-    return {
-      ok: true,
-      origin: getScreenShareServerOrigin()
-    }
-  })
 
   ipcMain.handle('createScreenShareRoom', async (_, payload = {}) => {
     try {
@@ -76,26 +67,6 @@ app.whenReady().then(async () => {
       return {
         ok: false,
         message: error instanceof Error ? error.message : '加入会议房间失败。'
-      }
-    }
-  })
-
-  ipcMain.handle('getScreenShareRoom', async (_, payload = {}) => {
-    try {
-      await ensureScreenShareServer()
-      const roomId = typeof payload?.roomId === 'string' ? payload.roomId.trim() : ''
-      const room = getRoomSummaryLocal(roomId)
-      if (!room) {
-        return {
-          ok: false,
-          message: 'Room not found.'
-        }
-      }
-      return room
-    } catch (error) {
-      return {
-        ok: false,
-        message: error instanceof Error ? error.message : '读取会议房间失败。'
       }
     }
   })

@@ -3,6 +3,47 @@ import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 
 const meetingWindows = new Map()
+const DARWIN_TITLE_BAR_HEIGHT = 28
+const WINDOWS_TITLE_BAR_HEIGHT = 32
+const DEFAULT_TITLE_BAR_HEIGHT = 34
+
+function getWindowChromeOptions() {
+  if (process.platform === 'darwin') {
+    return {
+      titleBarStyle: 'hidden',
+      trafficLightPosition: {
+        x: 14,
+        y: Math.round((DARWIN_TITLE_BAR_HEIGHT - 14) / 2)
+      },
+      backgroundColor: '#ffffff',
+      titleBarHeight: DARWIN_TITLE_BAR_HEIGHT
+    }
+  }
+
+  if (process.platform === 'win32') {
+    return {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: {
+        color: '#ffffff',
+        symbolColor: '#0f172a',
+        height: WINDOWS_TITLE_BAR_HEIGHT
+      },
+      backgroundColor: '#ffffff',
+      titleBarHeight: WINDOWS_TITLE_BAR_HEIGHT
+    }
+  }
+
+  return {
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#ffffff',
+      symbolColor: '#0f172a',
+      height: DEFAULT_TITLE_BAR_HEIGHT
+    },
+    backgroundColor: '#ffffff',
+    titleBarHeight: DEFAULT_TITLE_BAR_HEIGHT
+  }
+}
 
 function mapCaptureSourceItem(source) {
   return {
@@ -78,6 +119,10 @@ export async function openScreenCaptureSettings() {
 }
 
 export function createMainWindow({ iconPath, baseDir }) {
+  const chromeOptions = getWindowChromeOptions()
+  const query = new URLSearchParams()
+  query.set('platform', process.platform)
+  query.set('titleBarHeight', String(chromeOptions.titleBarHeight))
   const window = new BrowserWindow({
     width: 1200,
     height: 760,
@@ -86,6 +131,12 @@ export function createMainWindow({ iconPath, baseDir }) {
     show: false,
     autoHideMenuBar: true,
     title: '会议',
+    titleBarStyle: chromeOptions.titleBarStyle,
+    ...(chromeOptions.titleBarOverlay ? { titleBarOverlay: chromeOptions.titleBarOverlay } : {}),
+    ...(chromeOptions.trafficLightPosition
+      ? { trafficLightPosition: chromeOptions.trafficLightPosition }
+      : {}),
+    backgroundColor: chromeOptions.backgroundColor,
     ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       preload: join(baseDir, '../preload/index.js'),
@@ -103,9 +154,11 @@ export function createMainWindow({ iconPath, baseDir }) {
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    window.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    window.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?${query.toString()}`)
   } else {
-    window.loadFile(join(baseDir, '../renderer/index.html'))
+    window.loadFile(join(baseDir, '../renderer/index.html'), {
+      query: Object.fromEntries(query.entries())
+    })
   }
 
   return window
@@ -121,6 +174,7 @@ export function createMeetingWindow({ baseDir, roomId = '', sessionPayload = nul
     return existingWindow
   }
 
+  const chromeOptions = getWindowChromeOptions()
   const meetingWindow = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -128,6 +182,12 @@ export function createMeetingWindow({ baseDir, roomId = '', sessionPayload = nul
     minHeight: 620,
     autoHideMenuBar: true,
     title: '会议',
+    titleBarStyle: chromeOptions.titleBarStyle,
+    ...(chromeOptions.titleBarOverlay ? { titleBarOverlay: chromeOptions.titleBarOverlay } : {}),
+    ...(chromeOptions.trafficLightPosition
+      ? { trafficLightPosition: chromeOptions.trafficLightPosition }
+      : {}),
+    backgroundColor: '#eef3f8',
     webPreferences: {
       preload: join(baseDir, '../preload/index.js'),
       sandbox: false
@@ -135,6 +195,8 @@ export function createMeetingWindow({ baseDir, roomId = '', sessionPayload = nul
   })
 
   const query = new URLSearchParams({ meeting: '1' })
+  query.set('platform', process.platform)
+  query.set('titleBarHeight', String(chromeOptions.titleBarHeight))
   if (roomId) {
     query.set('roomId', roomId)
   }

@@ -581,14 +581,33 @@ function startScreenShareServer() {
 
       if (message.type === 'share-state' && socketState.role === 'host') {
         room.shareActive = Boolean(message.active)
+        room.shareOwnerPeerId = room.shareActive ? socketState.peerId : ''
         room.updatedAt = now()
         const eventType = room.shareActive ? 'share-started' : 'share-stopped'
         for (const viewer of room.viewers.values()) {
           if (viewer.socket) {
             sendJson(viewer.socket, {
               type: eventType,
+              peerId: socketState.peerId,
               room: summarizeRoom(room)
             })
+          }
+        }
+        broadcastRoomState(room)
+        return
+      }
+
+      if (message.type === 'share-state') {
+        if (socketState.role !== 'host') {
+          return
+        }
+        room.shareActive = Boolean(message.active)
+        room.updatedAt = now()
+        const eventType = room.shareActive ? 'share-started' : 'share-stopped'
+        const payload = { type: eventType, room: summarizeRoom(room) }
+        for (const viewer of room.viewers.values()) {
+          if (viewer.socket) {
+            sendJson(viewer.socket, payload)
           }
         }
         broadcastRoomState(room)
