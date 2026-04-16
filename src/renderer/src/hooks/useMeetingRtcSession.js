@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isLikelyPermissionError } from '../utils/shareUtils'
+import { useMeetingSfuClient } from './useMeetingSfuClient'
 import {
   buildMeetingReconnectFailedStatusMessage,
   buildMeetingReconnectStatusMessage,
@@ -8,7 +9,6 @@ import {
   consumeIncomingDataChannelPacket,
   createEmptySession,
   createPeerConnection,
-  createTransferId,
   getReconnectDelay,
   hasEnabledTrack,
   normalizeRoomParticipants,
@@ -43,6 +43,7 @@ export function useMeetingRtcSession({
   const [microphoneState, setMicrophoneState] = useState('idle')
   const [localPreviewStream, setLocalPreviewStream] = useState(null)
   const [remotePreviewStream, setRemotePreviewStream] = useState(null)
+  const meetingSfuClient = useMeetingSfuClient()
 
   const displayStreamRef = useRef(null)
   const microphoneStreamRef = useRef(null)
@@ -368,6 +369,7 @@ export function useMeetingRtcSession({
     reconnectAttemptsRef.current = 0
     meetingSocketConnectedRef.current = false
     pendingSocketConnectRef.current = null
+    meetingSfuClient.reset()
     const disconnectSocket = window.api?.disconnectScreenShareMeetingSocket
     if (typeof disconnectSocket === 'function') {
       Promise.resolve(
@@ -391,6 +393,7 @@ export function useMeetingRtcSession({
     clearReconnectTimer,
     closeHostPeerConnections,
     closeViewerPeerConnection,
+    meetingSfuClient,
     stopDisplayStream,
     stopMicrophoneStream
   ])
@@ -409,39 +412,6 @@ export function useMeetingRtcSession({
     [sendSocketMessage]
   )
 
-  const resolveOutgoingSender = useCallback(() => {
-    const inferredHost =
-      sessionRef.current.peerId === 'host' ||
-      roomInfo?.peerId === 'host' ||
-      initialSessionPayload?.peerId === 'host' ||
-      isRoomOwner
-
-    const nextRole =
-      sessionRef.current.role ||
-      roomInfo?.role ||
-      initialSessionPayload?.role ||
-      (inferredHost ? 'host' : 'viewer')
-
-    const role = nextRole === 'host' ? 'host' : 'viewer'
-    const senderPeerId =
-      sessionRef.current.peerId ||
-      roomInfo?.peerId ||
-      initialSessionPayload?.peerId ||
-      (role === 'host' ? 'host' : `viewer-${currentUserId || 'local'}`)
-
-    return {
-      role,
-      senderPeerId
-    }
-  }, [
-    currentUserId,
-    initialSessionPayload?.peerId,
-    initialSessionPayload?.role,
-    isRoomOwner,
-    roomInfo?.peerId,
-    roomInfo?.role
-  ])
-
   const sendChatText = useCallback(
     async (text) => {
       const nextText = String(text || '').trim()
@@ -454,46 +424,18 @@ export function useMeetingRtcSession({
         return false
       }
 
-      const sender = resolveOutgoingSender()
-      const message = {
-        messageId: createTransferId('msg-'),
-        roomId: roomInfo?.roomId || activeRoomId || '',
-        senderPeerId: sender.senderPeerId,
-        senderRole: sender.role,
+      const sent = sendSocketMessage({
+        type: 'chat-message',
         kind: 'text',
-        text: nextText,
-        imageDataUrl: '',
-        createdAt: Date.now()
-      }
-      appendChatMessage(message)
-
-      const role = sender.role
-      let sent = false
-      if (role === 'host') {
-        relayChatMessageFromHost(message)
-        sent = true
-      } else {
-        sent = sendDataChannelPayload(viewerChatChannelRef.current, {
-          type: 'chat-message',
-          message
-        })
-      }
-
+        text: nextText
+      })
       if (!sent) {
         setStatusMessage('会议连接尚未恢复，暂时无法发送消息。')
       }
 
       return sent
     },
-    [
-      activeRoomId,
-      appendChatMessage,
-      canLeaveMeeting,
-      relayChatMessageFromHost,
-      roomInfo?.roomId,
-      resolveOutgoingSender,
-      sendDataChannelPayload
-    ]
+    [canLeaveMeeting, sendSocketMessage]
   )
 
   const sendChatImage = useCallback(
@@ -531,46 +473,18 @@ export function useMeetingRtcSession({
         return false
       }
 
-      const sender = resolveOutgoingSender()
-      const message = {
-        messageId: createTransferId('msg-'),
-        roomId: roomInfo?.roomId || activeRoomId || '',
-        senderPeerId: sender.senderPeerId,
-        senderRole: sender.role,
+      const sent = sendSocketMessage({
+        type: 'chat-message',
         kind: 'image',
-        text: '',
-        imageDataUrl,
-        createdAt: Date.now()
-      }
-      appendChatMessage(message)
-
-      const role = sender.role
-      let sent = false
-      if (role === 'host') {
-        relayChatMessageFromHost(message)
-        sent = true
-      } else {
-        sent = sendDataChannelPayload(viewerChatChannelRef.current, {
-          type: 'chat-message',
-          message
-        })
-      }
-
+        imageDataUrl
+      })
       if (!sent) {
         setStatusMessage('会议连接尚未恢复，暂时无法发送图片。')
       }
 
       return sent
     },
-    [
-      activeRoomId,
-      appendChatMessage,
-      canLeaveMeeting,
-      relayChatMessageFromHost,
-      roomInfo?.roomId,
-      resolveOutgoingSender,
-      sendDataChannelPayload
-    ]
+    [canLeaveMeeting, sendSocketMessage]
   )
 
   const buildHostPeerConnection = useCallback(
@@ -837,11 +751,33 @@ export function useMeetingRtcSession({
     [closeMeetingWindow, resetShareSession]
   )
 
-  const handleChatMessage = useCallback(async (message) => {
-    if (message.message) {
-      setChatMessages((previous) => [...previous, message.message])
-    }
-  }, [])
+  const handleChatMessage = useCallback(
+    async (message) => {
+      if (message.message) {
+        appendChatMessage(message.message)
+      }
+    },
+    [appendChatMessage]
+  )
+
+  const handleRouterRtpCapabilitiesMessage = useCallback(
+    async (message) => {
+      if (!message?.rtpCapabilities) {
+        return
+      }
+
+      try {
+        await meetingSfuClient.initializeDevice(message.rtpCapabilities)
+        await meetingSfuClient.ensureSendTransport(sendSocketMessage)
+        await meetingSfuClient.ensureRecvTransport(sendSocketMessage)
+      } catch (error) {
+        setStatusMessage(
+          `SFU 能力初始化失败：${error instanceof Error ? error.message : '未知错误。'}`
+        )
+      }
+    },
+    [meetingSfuClient, sendSocketMessage, setStatusMessage]
+  )
 
   const handlePeerJoinMessage = useCallback(
     async (message) => {
@@ -945,6 +881,7 @@ export function useMeetingRtcSession({
       welcome: handleRoomSnapshotMessage,
       'room-state': handleRoomSnapshotMessage,
       'room-closed': handleRoomClosedMessage,
+      'router-rtp-capabilities': handleRouterRtpCapabilitiesMessage,
       'chat-message': handleChatMessage,
       'peer-join': handlePeerJoinMessage,
       'peer-leave': handlePeerLeaveMessage,
@@ -964,6 +901,7 @@ export function useMeetingRtcSession({
       handlePeerLeaveMessage,
       handleRenegotiateRequestMessage,
       handleRoomClosedMessage,
+      handleRouterRtpCapabilitiesMessage,
       handleRoomSnapshotMessage,
       handleShareStartedMessage,
       handleShareStoppedMessage
@@ -973,11 +911,13 @@ export function useMeetingRtcSession({
   const handleSocketMessage = useCallback(
     async (message) => {
       const handler = socketMessageHandlers[message.type]
+      meetingSfuClient.handleSocketMessage(message)
+
       if (handler) {
         await handler(message)
       }
     },
-    [socketMessageHandlers]
+    [meetingSfuClient, socketMessageHandlers]
   )
 
   useEffect(() => {
@@ -1071,8 +1011,10 @@ export function useMeetingRtcSession({
           announceAudioState(hasEnabledTrack(microphoneStreamRef.current))
         })
       }
+
+      sendSocketMessage({ type: 'get-router-rtp-capabilities' })
     },
-    [announceAudioState, announceShareState, updateRoomInfo]
+    [announceAudioState, announceShareState, sendSocketMessage, updateRoomInfo]
   )
 
   const handleSocketClose = useCallback(
@@ -1369,6 +1311,7 @@ export function useMeetingRtcSession({
     setStatusMessage,
     activeRoomId,
     roomInfo,
+    meetingSfuClient,
     chatMessages,
     localVideoRef,
     remoteVideoRef,

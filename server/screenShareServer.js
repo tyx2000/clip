@@ -2,13 +2,15 @@ const crypto = require('node:crypto')
 const http = require('node:http')
 const { URL } = require('node:url')
 const WebSocket = require('ws')
+const { createMeetingRoomServer } = require('./meetingRoomServer')
+const { createMeetingSfuServer } = require('./meetingSfuServer')
+const { MEETING_SIGNAL_TYPES } = require('./meetingSignalProtocol')
 
 const PORT = Number(process.env.SCREEN_SHARE_PORT || 8788)
 const HOST = process.env.SCREEN_SHARE_HOST || '127.0.0.1'
 const ROOM_IDLE_TTL_MS = 30 * 60 * 1000
 const MAX_VIEWERS_PER_ROOM = 4
 
-const rooms = new Map()
 const roomListSubscribers = new Set()
 let screenShareServerPromise = null
 
@@ -38,20 +40,6 @@ function createToken() {
 
 function isSocketOpen(socket) {
   return Boolean(socket && socket.readyState === WebSocket.OPEN)
-}
-
-function getOnlineViewerCount(room) {
-  let count = 0
-  for (const viewer of room.viewers.values()) {
-    if (isSocketOpen(viewer.socket)) {
-      count += 1
-    }
-  }
-  return count
-}
-
-function hasAnyOnlineParticipant(room) {
-  return isSocketOpen(room.host?.socket) || getOnlineViewerCount(room) > 0
 }
 
 function getWsOrigin(req) {
@@ -100,151 +88,31 @@ function parseJsonBody(req) {
   })
 }
 
-function summarizeRoom(room) {
-  return {
-    roomId: room.roomId,
-    ownerUserId: room.ownerUserId || '',
-    createdAt: room.createdAt,
-    updatedAt: room.updatedAt,
-    hostPresent: isSocketOpen(room.host?.socket),
-    viewerCount: getOnlineViewerCount(room),
-    shareActive: room.shareActive,
-    participants: summarizeParticipants(room),
-    role: room.role || 'host'
-  }
-}
+const roomServer = createMeetingRoomServer({
+  now,
+  createRoomId,
+  createPeerId,
+  createToken,
+  getWsOrigin,
+  isSocketOpen,
+  maxViewersPerRoom: MAX_VIEWERS_PER_ROOM
+})
 
-function summarizeParticipants(room) {
-  const participants = [
-    {
-      peerId: room.host.peerId,
-      userId: room.host.userId || '',
-      role: 'host',
-      connected: isSocketOpen(room.host.socket),
-      audioEnabled: Boolean(room.host.audioEnabled)
-    }
-  ]
-
-  for (const viewer of room.viewers.values()) {
-    participants.push({
-      peerId: viewer.peerId,
-      userId: viewer.userId || '',
-      role: 'viewer',
-      connected: isSocketOpen(viewer.socket),
-      audioEnabled: Boolean(viewer.audioEnabled)
-    })
-  }
-
-  return participants
-}
-
-function listRoomSummaries() {
-  return [...rooms.values()]
-    .map((room) => summarizeRoom(room))
-    .sort((left, right) => right.updatedAt - left.updatedAt)
-}
-
-function ensureRoom(roomId) {
-  const room = rooms.get(roomId)
-  if (!room) {
-    return null
-  }
-  room.updatedAt = now()
-  return room
-}
-
-function createRoom(req, ownerUserId = '') {
-  const roomId = createRoomId()
-  const hostToken = createToken()
-  const room = {
-    roomId,
-    ownerUserId,
-    createdAt: now(),
-    updatedAt: now(),
-    shareActive: false,
-    host: {
-      peerId: 'host',
-      userId: ownerUserId,
-      token: hostToken,
-      socket: null,
-      audioEnabled: false
-    },
-    viewers: new Map()
-  }
-  rooms.set(roomId, room)
-  broadcastRoomList()
-
-  const wsOrigin = getWsOrigin(req)
-  return {
-    ok: true,
-    roomId,
-    role: 'host',
-    peerId: 'host',
-    token: hostToken,
-    wsUrl: `${wsOrigin}/ws`,
-    ...summarizeRoom(room)
-  }
-}
-
-function joinRoom(req, roomId, userId = '') {
-  const room = ensureRoom(roomId)
-  if (!room) {
-    return { ok: false, statusCode: 404, message: 'Room not found.' }
-  }
-
-  if (getOnlineViewerCount(room) >= MAX_VIEWERS_PER_ROOM) {
-    return { ok: false, statusCode: 409, message: 'Viewer limit reached.' }
-  }
-
-  const peerId = createPeerId('viewer')
-  const token = createToken()
-  room.viewers.set(peerId, {
-    peerId,
-    userId,
-    token,
-    socket: null,
-    audioEnabled: false
-  })
-  room.updatedAt = now()
-  broadcastRoomList()
-
-  return {
-    ok: true,
-    roomId,
-    role: 'viewer',
-    peerId,
-    token,
-    wsUrl: `${getWsOrigin(req)}/ws`,
-    ...summarizeRoom(room)
-  }
-}
-
-function createRoomLocal(ownerUserId = '') {
-  return createRoom(null, ownerUserId)
-}
-
-function joinRoomLocal(roomId, userId = '') {
-  return joinRoom(null, roomId, userId)
-}
-
-function getRoomSummaryLocal(roomId) {
-  const room = ensureRoom(roomId)
-  if (!room) {
-    return null
-  }
-
-  return {
-    ok: true,
-    ...summarizeRoom(room)
-  }
-}
-
-function getPeer(room, role, peerId) {
-  if (role === 'host') {
-    return room.host.peerId === peerId ? room.host : null
-  }
-  return room.viewers.get(peerId) || null
-}
+const {
+  hasAnyOnlineParticipant,
+  summarizeRoom,
+  listRoomSummaries,
+  ensureRoom,
+  createRoom: createRoomState,
+  joinRoom: joinRoomState,
+  createRoomLocal: createRoomStateLocal,
+  joinRoomLocal: joinRoomStateLocal,
+  getRoomSummaryLocal,
+  getPeer,
+  deleteRoom,
+  cleanupRooms: cleanupIdleRooms
+} = roomServer
+const meetingSfuServer = createMeetingSfuServer()
 
 function sendJson(socket, payload) {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -253,9 +121,37 @@ function sendJson(socket, payload) {
   socket.send(JSON.stringify(payload))
 }
 
+function createRoom(req, ownerUserId = '') {
+  const payload = createRoomState(req, ownerUserId)
+  broadcastRoomList()
+  return payload
+}
+
+function joinRoom(req, roomId, userId = '') {
+  const payload = joinRoomState(req, roomId, userId)
+  if (payload.ok) {
+    broadcastRoomList()
+  }
+  return payload
+}
+
+function createRoomLocal(ownerUserId = '') {
+  const payload = createRoomStateLocal(ownerUserId)
+  broadcastRoomList()
+  return payload
+}
+
+function joinRoomLocal(roomId, userId = '') {
+  const payload = joinRoomStateLocal(roomId, userId)
+  if (payload.ok) {
+    broadcastRoomList()
+  }
+  return payload
+}
+
 function broadcastRoomList() {
   const payload = {
-    type: 'rooms-snapshot',
+    type: MEETING_SIGNAL_TYPES.ROOMS_SNAPSHOT,
     rooms: listRoomSummaries()
   }
 
@@ -266,7 +162,7 @@ function broadcastRoomList() {
 
 function broadcastRoomState(room) {
   const payload = {
-    type: 'room-state',
+    type: MEETING_SIGNAL_TYPES.ROOM_STATE,
     room: summarizeRoom(room)
   }
   if (room.host.socket) {
@@ -282,7 +178,7 @@ function broadcastRoomState(room) {
 
 function closeRoom(room, message = 'Host left the meeting. Room closed.') {
   const payload = {
-    type: 'room-closed',
+    type: MEETING_SIGNAL_TYPES.ROOM_CLOSED,
     roomId: room.roomId,
     message
   }
@@ -300,13 +196,14 @@ function closeRoom(room, message = 'Host left the meeting. Room closed.') {
     viewer.socket.close()
   }
 
-  rooms.delete(room.roomId)
+  deleteRoom(room.roomId)
+  void meetingSfuServer.closeRoomMedia(room.roomId).catch(() => {})
   broadcastRoomList()
 }
 
 function broadcastChatMessage(room, messagePayload) {
   const payload = {
-    type: 'chat-message',
+    type: MEETING_SIGNAL_TYPES.CHAT_MESSAGE,
     message: messagePayload
   }
 
@@ -323,12 +220,14 @@ function broadcastChatMessage(room, messagePayload) {
 
 function handlePeerDisconnect(room, role, peerId) {
   if (role === 'host') {
+    void meetingSfuServer.closeParticipantMedia(room.roomId, peerId).catch(() => {})
     room.host.socket = null
     room.host.audioEnabled = false
     room.shareActive = false
     closeRoom(room, '主持人已离开会议，房间已关闭。')
     return true
   } else {
+    void meetingSfuServer.closeParticipantMedia(room.roomId, peerId).catch(() => {})
     const viewer = room.viewers.get(peerId)
     if (viewer) {
       viewer.socket = null
@@ -336,7 +235,7 @@ function handlePeerDisconnect(room, role, peerId) {
     }
     if (room.host.socket) {
       sendJson(room.host.socket, {
-        type: 'peer-leave',
+        type: MEETING_SIGNAL_TYPES.PEER_LEAVE,
         peerId
       })
     }
@@ -393,17 +292,7 @@ function handleSignalMessage(room, socketState, message) {
 
 function cleanupRooms() {
   const cutoff = now() - ROOM_IDLE_TTL_MS
-  let changed = false
-  for (const [roomId, room] of rooms.entries()) {
-    const hostOnline = isSocketOpen(room.host?.socket)
-    const hasOnlineViewer = [...room.viewers.values()].some((viewer) => isSocketOpen(viewer.socket))
-    if (!hostOnline && !hasOnlineViewer && room.updatedAt < cutoff) {
-      rooms.delete(roomId)
-      changed = true
-    }
-  }
-
-  if (changed) {
+  if (cleanupIdleRooms(cutoff)) {
     broadcastRoomList()
   }
 }
@@ -512,24 +401,27 @@ function startScreenShareServer() {
       try {
         message = JSON.parse(String(raw || ''))
       } catch {
-        sendJson(socket, { type: 'error', message: 'Invalid message payload.' })
+        sendJson(socket, {
+          type: MEETING_SIGNAL_TYPES.ERROR,
+          message: 'Invalid message payload.'
+        })
         return
       }
 
-      if (message.type === 'subscribe-rooms') {
-        socketState.subscriptionType = 'rooms'
+      if (message.type === MEETING_SIGNAL_TYPES.SUBSCRIBE_ROOMS) {
+        socketState.subscriptionType = MEETING_SIGNAL_TYPES.SUBSCRIBE_ROOMS
         roomListSubscribers.add(socket)
         sendJson(socket, {
-          type: 'rooms-snapshot',
+          type: MEETING_SIGNAL_TYPES.ROOMS_SNAPSHOT,
           rooms: listRoomSummaries()
         })
         return
       }
 
-      if (message.type === 'hello') {
+      if (message.type === MEETING_SIGNAL_TYPES.HELLO) {
         const room = ensureRoom(String(message.roomId || ''))
         if (!room) {
-          sendJson(socket, { type: 'error', message: 'Room not found.' })
+          sendJson(socket, { type: MEETING_SIGNAL_TYPES.ERROR, message: 'Room not found.' })
           socket.close()
           return
         }
@@ -539,7 +431,7 @@ function startScreenShareServer() {
         const token = String(message.token || '')
         const peer = getPeer(room, role, peerId)
         if (!peer || peer.token !== token) {
-          sendJson(socket, { type: 'error', message: 'Invalid room token.' })
+          sendJson(socket, { type: MEETING_SIGNAL_TYPES.ERROR, message: 'Invalid room token.' })
           socket.close()
           return
         }
@@ -551,7 +443,7 @@ function startScreenShareServer() {
         room.updatedAt = now()
 
         sendJson(socket, {
-          type: 'welcome',
+          type: MEETING_SIGNAL_TYPES.WELCOME,
           room: summarizeRoom(room),
           role,
           peerId,
@@ -565,7 +457,7 @@ function startScreenShareServer() {
 
         if (role === 'viewer' && room.host.socket) {
           sendJson(room.host.socket, {
-            type: 'peer-join',
+            type: MEETING_SIGNAL_TYPES.PEER_JOIN,
             peerId
           })
         }
@@ -579,11 +471,114 @@ function startScreenShareServer() {
         return
       }
 
-      if (message.type === 'share-state' && socketState.role === 'host') {
+      if (message.type === MEETING_SIGNAL_TYPES.GET_ROUTER_RTP_CAPABILITIES) {
+        try {
+          const rtpCapabilities = await meetingSfuServer.getRouterRtpCapabilities(room.roomId)
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ROUTER_RTP_CAPABILITIES,
+            roomId: room.roomId,
+            rtpCapabilities
+          })
+        } catch (error) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            message: error instanceof Error ? error.message : 'Failed to create SFU router.'
+          })
+        }
+        return
+      }
+
+      if (message.type === MEETING_SIGNAL_TYPES.CREATE_SEND_TRANSPORT) {
+        try {
+          const transportOptions = await meetingSfuServer.createSendTransport(
+            room.roomId,
+            socketState.peerId
+          )
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.SEND_TRANSPORT_CREATED,
+            roomId: room.roomId,
+            transportOptions
+          })
+        } catch (error) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            message: error instanceof Error ? error.message : 'Failed to create SFU send transport.'
+          })
+        }
+        return
+      }
+
+      if (message.type === MEETING_SIGNAL_TYPES.CONNECT_SEND_TRANSPORT) {
+        try {
+          await meetingSfuServer.connectSendTransport(
+            room.roomId,
+            socketState.peerId,
+            message.dtlsParameters
+          )
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.CONNECT_SEND_TRANSPORT,
+            roomId: room.roomId,
+            ok: true
+          })
+        } catch (error) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            message:
+              error instanceof Error ? error.message : 'Failed to connect SFU send transport.'
+          })
+        }
+        return
+      }
+
+      if (message.type === MEETING_SIGNAL_TYPES.CREATE_RECV_TRANSPORT) {
+        try {
+          const transportOptions = await meetingSfuServer.createRecvTransport(
+            room.roomId,
+            socketState.peerId
+          )
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.RECV_TRANSPORT_CREATED,
+            roomId: room.roomId,
+            transportOptions
+          })
+        } catch (error) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            message: error instanceof Error ? error.message : 'Failed to create SFU recv transport.'
+          })
+        }
+        return
+      }
+
+      if (message.type === MEETING_SIGNAL_TYPES.CONNECT_RECV_TRANSPORT) {
+        try {
+          await meetingSfuServer.connectRecvTransport(
+            room.roomId,
+            socketState.peerId,
+            message.dtlsParameters
+          )
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.CONNECT_RECV_TRANSPORT,
+            roomId: room.roomId,
+            ok: true
+          })
+        } catch (error) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            message:
+              error instanceof Error ? error.message : 'Failed to connect SFU recv transport.'
+          })
+        }
+        return
+      }
+
+      if (message.type === MEETING_SIGNAL_TYPES.SHARE_STATE && socketState.role === 'host') {
         room.shareActive = Boolean(message.active)
         room.shareOwnerPeerId = room.shareActive ? socketState.peerId : ''
         room.updatedAt = now()
-        const eventType = room.shareActive ? 'share-started' : 'share-stopped'
+        const eventType = room.shareActive
+          ? MEETING_SIGNAL_TYPES.SHARE_STARTED
+          : MEETING_SIGNAL_TYPES.SHARE_STOPPED
         for (const viewer of room.viewers.values()) {
           if (viewer.socket) {
             sendJson(viewer.socket, {
@@ -597,13 +592,15 @@ function startScreenShareServer() {
         return
       }
 
-      if (message.type === 'share-state') {
+      if (message.type === MEETING_SIGNAL_TYPES.SHARE_STATE) {
         if (socketState.role !== 'host') {
           return
         }
         room.shareActive = Boolean(message.active)
         room.updatedAt = now()
-        const eventType = room.shareActive ? 'share-started' : 'share-stopped'
+        const eventType = room.shareActive
+          ? MEETING_SIGNAL_TYPES.SHARE_STARTED
+          : MEETING_SIGNAL_TYPES.SHARE_STOPPED
         const payload = { type: eventType, room: summarizeRoom(room) }
         for (const viewer of room.viewers.values()) {
           if (viewer.socket) {
@@ -614,7 +611,7 @@ function startScreenShareServer() {
         return
       }
 
-      if (message.type === 'audio-state') {
+      if (message.type === MEETING_SIGNAL_TYPES.AUDIO_STATE) {
         const peer = getPeer(room, socketState.role, socketState.peerId)
         if (!peer) {
           return
@@ -626,7 +623,7 @@ function startScreenShareServer() {
         return
       }
 
-      if (message.type === 'chat-message') {
+      if (message.type === MEETING_SIGNAL_TYPES.CHAT_MESSAGE) {
         const kind = message.kind === 'image' ? 'image' : 'text'
         const text =
           kind === 'text'
@@ -658,7 +655,7 @@ function startScreenShareServer() {
         return
       }
 
-      if (message.type === 'leave') {
+      if (message.type === MEETING_SIGNAL_TYPES.LEAVE) {
         removePeer(room, socketState.role, socketState.peerId)
         socketState.roomId = ''
         socketState.role = ''
@@ -668,17 +665,17 @@ function startScreenShareServer() {
       }
 
       if (
-        message.type === 'offer' ||
-        message.type === 'answer' ||
-        message.type === 'ice-candidate' ||
-        message.type === 'renegotiate-request'
+        message.type === MEETING_SIGNAL_TYPES.OFFER ||
+        message.type === MEETING_SIGNAL_TYPES.ANSWER ||
+        message.type === MEETING_SIGNAL_TYPES.ICE_CANDIDATE ||
+        message.type === MEETING_SIGNAL_TYPES.RENEGOTIATE_REQUEST
       ) {
         handleSignalMessage(room, socketState, message)
       }
     })
 
     socket.on('close', () => {
-      if (socketState.subscriptionType === 'rooms') {
+      if (socketState.subscriptionType === MEETING_SIGNAL_TYPES.SUBSCRIBE_ROOMS) {
         roomListSubscribers.delete(socket)
       }
 
