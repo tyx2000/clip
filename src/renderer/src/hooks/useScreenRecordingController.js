@@ -802,6 +802,23 @@ export function useScreenRecordingController({
   }, [])
 
   /**
+   * 打开录屏剪辑窗口，并把当前素材带入剪辑工作台。
+   *
+   * @param {string} path 目标录屏文件路径。
+   */
+  const handleOpenRecordingEditor = useCallback(async (path) => {
+    if (typeof window.api?.openScreenRecordingEditor !== 'function') {
+      setStatusMessage('剪辑窗口 API 不可用，请重启 Electron 应用进程。')
+      return
+    }
+
+    const result = await window.api.openScreenRecordingEditor({ path })
+    if (!result?.ok) {
+      setStatusMessage(result?.message || '打开剪辑窗口失败。')
+    }
+  }, [])
+
+  /**
    * 在系统文件管理器中定位录屏文件。
    *
    * @param {string} path 目标录屏文件路径。
@@ -938,6 +955,7 @@ export function useScreenRecordingController({
     handleConfirmSourceAndStart,
     handleCancelPicker,
     handleOpenRecording,
+    handleOpenRecordingEditor,
     handleRevealRecording,
     handleDeleteRecordingWithGuard,
     handleRetryCloudSync

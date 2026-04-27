@@ -435,6 +435,54 @@ export function createRecordingPlayerWindow({ filePath }) {
   return playerWindow
 }
 
+/** 创建独立的录屏剪辑窗口。 */
+export function createRecordingEditorWindow({ filePath }) {
+  const editorWindow = new BrowserWindow({
+    width: 1480,
+    height: 920,
+    minWidth: 1180,
+    minHeight: 760,
+    autoHideMenuBar: true,
+    title: `视频剪辑 - ${filePath.split(sep).pop() || ''}`,
+    backgroundColor: '#0a0d14',
+    webPreferences: {
+      preload: PRELOAD_ENTRY_PATH,
+      sandbox: false
+    }
+  })
+
+  const videoUrl = toRecordingMediaUrl(filePath)
+  const displayName = filePath.split(sep).pop() || ''
+
+  editorWindow.webContents.on('did-fail-load', (_, errorCode, errorDescription) => {
+    console.warn('[recording] editor window failed to load:', errorCode, errorDescription)
+  })
+
+  editorWindow.webContents.on('console-message', (_, level, message) => {
+    if (level >= 2) {
+      console.warn('[recording] editor console:', message)
+    }
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    const base = process.env['ELECTRON_RENDERER_URL']
+    const query = new URLSearchParams({
+      editor: videoUrl,
+      name: displayName
+    }).toString()
+    editorWindow.loadURL(`${base}?${query}`)
+  } else {
+    editorWindow.loadFile(RENDERER_ENTRY_PATH, {
+      query: {
+        editor: videoUrl,
+        name: displayName
+      }
+    })
+  }
+
+  return editorWindow
+}
+
 /** 执行一次 ffmpeg 命令，并在失败时抛出带上下文的错误。 */
 export async function runFfmpeg(args) {
   if (!ffmpegPath) {

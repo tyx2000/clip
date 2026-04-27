@@ -15,6 +15,7 @@ import {
 } from './recordingService'
 import { cleanupRecordingSessionArtifacts } from './recordingFinalizer'
 import {
+  createRecordingEditorWindow,
   createRecordingPlayerWindow,
   getPosterPathByVideoPath,
   getRecordingsDirectoryPath,
@@ -246,6 +247,24 @@ export function registerRecordingHandlers() {
       return {
         ok: false,
         message: error instanceof Error ? error.message : 'Failed to open player window.'
+      }
+    }
+  })
+
+  /** 响应功能：根据录屏路径打开剪辑窗口。 */
+  ipcMain.handle('openScreenRecordingEditor', async (_, payload = {}) => {
+    const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    if (!isRecordingFilePath(filePath)) {
+      return { ok: false, message: 'Invalid recording path.' }
+    }
+
+    try {
+      createRecordingEditorWindow({ filePath })
+      return { ok: true }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to open editor window.'
       }
     }
   })

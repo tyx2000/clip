@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react'
 import styled from 'styled-components'
+import RecordingCutEditor from './components/RecordingCutEditor'
 import RecordingVideoCard from './components/RecordingVideoCard'
 import SourcePickerModal from './components/SourcePickerModal'
 import { formatBytes, formatDuration, getPreferredRecorderMimeType } from './utils/recordingUtils'
@@ -181,8 +182,12 @@ const PlayerVideo = styled.video`
 function App() {
   const playerParams = useMemo(() => new URLSearchParams(window.location.search), [])
   const playerUrl = playerParams.get('player') || ''
+  const editorUrl = playerParams.get('editor') || ''
+  const editorName = playerParams.get('name') || '未命名素材'
   const playerName = playerParams.get('name') || '录制回放'
   const isPlayerWindow = Boolean(playerUrl)
+  const isEditorWindow = Boolean(editorUrl)
+  const isUtilityWindow = isPlayerWindow || isEditorWindow
   const preferredMimeType = useMemo(() => getPreferredRecorderMimeType(), [])
 
   const applySessionStats = useCallback((result, setRecordingStats) => {
@@ -224,12 +229,13 @@ function App() {
     handleConfirmSourceAndStart,
     handleCancelPicker,
     handleOpenRecording,
+    handleOpenRecordingEditor,
     handleRevealRecording,
     handleDeleteRecordingWithGuard,
     handleRetryCloudSync
   } = useScreenRecordingController({
-    isPlayerWindow,
-    playerName,
+    isPlayerWindow: isUtilityWindow,
+    playerName: isEditorWindow ? editorName : playerName,
     preferredMimeType,
     applySessionStats
   })
@@ -243,6 +249,10 @@ function App() {
         </PlayerBody>
       </PlayerPage>
     )
+  }
+
+  if (isEditorWindow) {
+    return <RecordingCutEditor videoUrl={editorUrl} displayName={editorName} />
   }
 
   return (
@@ -310,6 +320,7 @@ function App() {
                     key={item.path}
                     item={item}
                     onOpen={handleOpenRecording}
+                    onCut={handleOpenRecordingEditor}
                     onReveal={handleRevealRecording}
                     onDelete={handleDeleteRecordingWithGuard}
                     onRetryCloudSync={handleRetryCloudSync}

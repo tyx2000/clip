@@ -144,6 +144,29 @@ function OpenIcon() {
   )
 }
 
+function CutIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M6.5 7.5A2.5 2.5 0 1 0 6.5 12.5A2.5 2.5 0 0 0 6.5 7.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M6.5 11.5A2.5 2.5 0 1 0 6.5 16.5A2.5 2.5 0 0 0 6.5 11.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M9 10L19 4.5M9 14L19 19.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
 function RevealIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -220,7 +243,7 @@ function getCloudSyncLabel(cloudSync) {
   return '???'
 }
 
-function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync }) {
+function RecordingVideoCard({ item, onOpen, onCut, onReveal, onDelete, onRetryCloudSync }) {
   const itemDurationSec = Number(item.durationSec || 0)
   const displayDurationSec =
     Number.isFinite(itemDurationSec) && itemDurationSec > 0 ? Math.floor(itemDurationSec) : 0
@@ -241,8 +264,8 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
           {canRetryCloudSync ? (
             <RetryButton
               type="button"
-              aria-label="????"
-              title="????"
+              aria-label="重试云同步"
+              title="重试云同步"
               onClick={() => onRetryCloudSync(item)}
             >
               <SyncIcon />
@@ -250,21 +273,34 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
           ) : null}
           <IconButton
             type="button"
-            aria-label="????"
-            title="????"
+            aria-label="打开剪辑"
+            title="打开剪辑"
+            onClick={() => onCut(item.path)}
+          >
+            <CutIcon />
+          </IconButton>
+          <IconButton
+            type="button"
+            aria-label="打开播放"
+            title="打开播放"
             onClick={() => onOpen(item.path)}
           >
             <OpenIcon />
           </IconButton>
           <IconButton
             type="button"
-            aria-label="????"
-            title="????"
+            aria-label="在文件夹中显示"
+            title="在文件夹中显示"
             onClick={() => onReveal(item.path)}
           >
             <RevealIcon />
           </IconButton>
-          <DeleteButton type="button" aria-label="??" title="??" onClick={() => onDelete(item)}>
+          <DeleteButton
+            type="button"
+            aria-label="删除视频"
+            title="删除视频"
+            onClick={() => onDelete(item)}
+          >
             <DeleteIcon />
           </DeleteButton>
         </FloatingActions>
@@ -301,6 +337,7 @@ RecordingVideoCard.propTypes = {
     })
   }).isRequired,
   onOpen: PropTypes.func.isRequired,
+  onCut: PropTypes.func.isRequired,
   onReveal: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
   onRetryCloudSync: PropTypes.func.isRequired

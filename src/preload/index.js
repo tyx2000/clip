@@ -39,6 +39,8 @@ const api = {
   setScreenRecordingSource: (payload) => ipcRenderer.invoke('setScreenRecordingSource', payload),
   /** 响应功能：打开录屏文件播放器窗口。 */
   openScreenRecording: (payload) => ipcRenderer.invoke('openScreenRecording', payload),
+  /** 响应功能：打开录屏文件剪辑窗口。 */
+  openScreenRecordingEditor: (payload) => ipcRenderer.invoke('openScreenRecordingEditor', payload),
   /** 响应功能：在系统文件管理器中定位录屏文件。 */
   revealScreenRecording: (payload) => ipcRenderer.invoke('revealScreenRecording', payload),
   /** 响应功能：删除录屏文件并同步清理关联会话。 */
