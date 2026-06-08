@@ -2,10 +2,10 @@
 import ffmpegPath from 'ffmpeg-static'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, desktopCapturer, protocol, shell, systemPreferences } from 'electron'
 import { createReadStream, existsSync } from 'fs'
-import { readFile, readdir, stat } from 'fs/promises'
+import { chmod, mkdir, readFile, readdir, stat } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
 import { dirname, extname, join, resolve, sep } from 'path'
 import { Readable } from 'node:stream'
@@ -38,6 +38,7 @@ export const CLOUD_SYNC_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 30_000, 60_000]
 const MAIN_ENTRY_DIR = dirname(fileURLToPath(import.meta.url))
 const PRELOAD_ENTRY_PATH = join(MAIN_ENTRY_DIR, '../preload/index.js')
 const RENDERER_ENTRY_PATH = join(MAIN_ENTRY_DIR, '../renderer/index.html')
+let resolvedFfmpegPath = ''
 
 /** 返回录屏输出根目录。 */
 export function getRecordingsDirectoryPath() {
@@ -71,6 +72,12 @@ export function formatTimestampForFileName(value = Date.now()) {
 export function createRecordingFileName(extension = 'webm') {
   const stamp = formatTimestampForFileName()
   return `${RECORDING_FILE_PREFIX}${stamp}.${extension}`
+}
+
+/** 生成剪辑导出文件名。 */
+export function createRecordingCutFileName(extension = 'webm') {
+  const stamp = formatTimestampForFileName()
+  return `cut-${stamp}.${extension}`
 }
 
 /** 生成新的录屏会话 id。 */
@@ -298,7 +305,8 @@ export function createMainWindow({ iconPath } = {}) {
     ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       preload: PRELOAD_ENTRY_PATH,
-      sandbox: false
+      sandbox: false,
+      webSecurity: false
     }
   })
 
@@ -321,6 +329,21 @@ export function createMainWindow({ iconPath } = {}) {
 }
 
 /** 注册 recording:// 媒体协议，用于安全暴露本地录屏文件。 */
+export function registerRecordingMediaProtocolScheme() {
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: RECORDING_MEDIA_SCHEME,
+      privileges: {
+        secure: true,
+        standard: true,
+        stream: true,
+        supportFetchAPI: true
+      }
+    }
+  ])
+}
+
+/** 注册 recording:// 媒体请求处理器，用于安全暴露本地录屏文件。 */
 export function registerRecordingMediaProtocol() {
   protocol.handle(RECORDING_MEDIA_SCHEME, async (request) => {
     const filePath = parseRecordingMediaRequestUrl(request.url)
@@ -447,11 +470,13 @@ export function createRecordingEditorWindow({ filePath }) {
     backgroundColor: '#0a0d14',
     webPreferences: {
       preload: PRELOAD_ENTRY_PATH,
-      sandbox: false
+      sandbox: false,
+      webSecurity: false
     }
   })
 
   const videoUrl = toRecordingMediaUrl(filePath)
+  const fileUrl = pathToFileURL(filePath).toString()
   const displayName = filePath.split(sep).pop() || ''
 
   editorWindow.webContents.on('did-fail-load', (_, errorCode, errorDescription) => {
@@ -468,6 +493,8 @@ export function createRecordingEditorWindow({ filePath }) {
     const base = process.env['ELECTRON_RENDERER_URL']
     const query = new URLSearchParams({
       editor: videoUrl,
+      fileUrl,
+      path: filePath,
       name: displayName
     }).toString()
     editorWindow.loadURL(`${base}?${query}`)
@@ -475,6 +502,8 @@ export function createRecordingEditorWindow({ filePath }) {
     editorWindow.loadFile(RENDERER_ENTRY_PATH, {
       query: {
         editor: videoUrl,
+        fileUrl,
+        path: filePath,
         name: displayName
       }
     })
@@ -483,14 +512,75 @@ export function createRecordingEditorWindow({ filePath }) {
   return editorWindow
 }
 
-/** 执行一次 ffmpeg 命令，并在失败时抛出带上下文的错误。 */
-export async function runFfmpeg(args) {
-  if (!ffmpegPath) {
-    throw new Error('ffmpeg binary is not available.')
+async function canRunFfmpeg(candidatePath) {
+  if (!candidatePath) {
+    return false
   }
 
+  if (candidatePath.includes(sep) && !existsSync(candidatePath)) {
+    return false
+  }
+
+  if (process.platform !== 'win32' && candidatePath.includes(sep)) {
+    try {
+      const fileStat = await stat(candidatePath)
+      if ((fileStat.mode & 0o111) === 0) {
+        await chmod(candidatePath, fileStat.mode | 0o755)
+      }
+    } catch {
+      return false
+    }
+  }
+
+  return await new Promise((resolveCallback) => {
+    const child = spawn(candidatePath, ['-version'], {
+      stdio: 'ignore'
+    })
+    const timer = setTimeout(() => {
+      child.kill()
+      resolveCallback(false)
+    }, 3000)
+
+    child.on('error', () => {
+      clearTimeout(timer)
+      resolveCallback(false)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolveCallback(code === 0)
+    })
+  })
+}
+
+/** 返回当前机器上可运行的 ffmpeg，优先使用依赖内置版本，失败后回退系统版本。 */
+async function resolveFfmpegExecutable() {
+  if (resolvedFfmpegPath) {
+    return resolvedFfmpegPath
+  }
+
+  const candidates = [
+    ffmpegPath,
+    '/opt/homebrew/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    'ffmpeg'
+  ].filter(Boolean)
+
+  for (const candidatePath of [...new Set(candidates)]) {
+    if (await canRunFfmpeg(candidatePath)) {
+      resolvedFfmpegPath = candidatePath
+      return resolvedFfmpegPath
+    }
+  }
+
+  throw new Error('No runnable ffmpeg binary is available.')
+}
+
+/** 执行一次 ffmpeg 命令，并在失败时抛出带上下文的错误。 */
+export async function runFfmpeg(args) {
+  const executablePath = await resolveFfmpegExecutable()
+
   await new Promise((resolveCallback, rejectCallback) => {
-    const child = spawn(ffmpegPath, args, {
+    const child = spawn(executablePath, args, {
       stdio: ['ignore', 'ignore', 'pipe']
     })
 
@@ -515,14 +605,175 @@ export async function runFfmpeg(args) {
   })
 }
 
+/** 执行 ffmpeg 并读取 stdout buffer。 */
+async function runFfmpegBuffer(args) {
+  const executablePath = await resolveFfmpegExecutable()
+
+  return await new Promise((resolveCallback, rejectCallback) => {
+    const child = spawn(executablePath, args, {
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+
+    const stdoutChunks = []
+    let stderr = ''
+
+    child.stdout.on('data', (chunk) => {
+      stdoutChunks.push(chunk)
+    })
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString()
+    })
+
+    child.on('error', (error) => {
+      rejectCallback(error)
+    })
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolveCallback(Buffer.concat(stdoutChunks))
+        return
+      }
+
+      const tail = stderr.trim().split('\n').slice(-5).join('\n')
+      rejectCallback(new Error(tail || `ffmpeg exited with code ${code}`))
+    })
+  })
+}
+
+/** 使用 ffmpeg 从录屏里抽取时间线缩略图。 */
+export async function extractRecordingThumbnails({
+  filePath,
+  times = [],
+  width = 160,
+  height = 90
+}) {
+  if (!isRecordingFilePath(filePath) || !existsSync(filePath)) {
+    throw new Error('Invalid recording path.')
+  }
+
+  const safeWidth = Math.max(48, Math.min(360, Math.trunc(Number(width) || 160)))
+  const safeHeight = Math.max(32, Math.min(240, Math.trunc(Number(height) || 90)))
+  const safeTimes = (Array.isArray(times) ? times : [])
+    .map((time) => Math.max(0, Number(time) || 0))
+    .slice(0, 24)
+  const thumbnails = []
+
+  for (const time of safeTimes) {
+    const buffer = await runFfmpegBuffer([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-ss',
+      String(time),
+      '-i',
+      filePath,
+      '-frames:v',
+      '1',
+      '-vf',
+      `scale=${safeWidth}:${safeHeight}:force_original_aspect_ratio=increase,crop=${safeWidth}:${safeHeight}`,
+      '-f',
+      'image2pipe',
+      '-vcodec',
+      'mjpeg',
+      'pipe:1'
+    ])
+
+    thumbnails.push({
+      time,
+      dataUrl: `data:image/jpeg;base64,${buffer.toString('base64')}`
+    })
+  }
+
+  return thumbnails
+}
+
+/** 使用 ffmpeg 导出剪辑后的录屏视频。 */
+export async function exportRecordingCut({ filePath, clips = [], output = {} }) {
+  if (!isRecordingFilePath(filePath) || !existsSync(filePath)) {
+    throw new Error('Invalid recording path.')
+  }
+
+  const safeClips = (Array.isArray(clips) ? clips : [])
+    .map((clip) => {
+      const sourceStart = Math.max(0, Number(clip?.sourceStart) || 0)
+      const duration = Math.max(0, Number(clip?.duration) || 0)
+      return {
+        duration,
+        sourceStart,
+        sourceEnd: sourceStart + duration
+      }
+    })
+    .filter((clip) => clip.duration >= 0.1)
+    .slice(0, 80)
+
+  if (!safeClips.length) {
+    throw new Error('No clips to export.')
+  }
+
+  const width = Math.trunc(Number(output?.width) || 0)
+  const height = Math.trunc(Number(output?.height) || 0)
+  const bitrate = Math.max(300_000, Math.min(30_000_000, Math.trunc(Number(output?.bitrate) || 0)))
+  const fps = Math.max(1, Math.min(60, Math.trunc(Number(output?.fps) || 30)))
+  const outputFilePath = join(getRecordingsDirectoryPath(), createRecordingCutFileName('webm'))
+  const trimFilters = []
+  const concatInputs = []
+
+  safeClips.forEach((clip, index) => {
+    trimFilters.push(
+      `[0:v]trim=start=${clip.sourceStart}:end=${clip.sourceEnd},setpts=PTS-STARTPTS[v${index}]`
+    )
+    concatInputs.push(`[v${index}]`)
+  })
+
+  const scaleFilter =
+    width > 0 && height > 0
+      ? `,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`
+      : ''
+  const filterComplex = `${trimFilters.join(';')};${concatInputs.join('')}concat=n=${safeClips.length}:v=1:a=0,format=yuv420p,fps=${fps}${scaleFilter}[outv]`
+
+  await mkdir(dirname(outputFilePath), { recursive: true })
+  await runFfmpeg([
+    '-y',
+    '-hide_banner',
+    '-i',
+    filePath,
+    '-filter_complex',
+    filterComplex,
+    '-map',
+    '[outv]',
+    '-an',
+    '-c:v',
+    'libvpx-vp9',
+    '-b:v',
+    bitrate ? String(bitrate) : '4M',
+    '-row-mt',
+    '1',
+    '-deadline',
+    'realtime',
+    '-cpu-used',
+    '4',
+    outputFilePath
+  ])
+
+  return outputFilePath
+}
+
 /** 读取视频时长，无法探测时返回 null。 */
 export async function probeVideoDurationSec(filePath) {
-  if (!ffmpegPath || !filePath || !existsSync(filePath)) {
+  if (!filePath || !existsSync(filePath)) {
+    return null
+  }
+
+  let executablePath = ''
+  try {
+    executablePath = await resolveFfmpegExecutable()
+  } catch {
     return null
   }
 
   return await new Promise((resolveCallback) => {
-    const child = spawn(ffmpegPath, ['-i', filePath], {
+    const child = spawn(executablePath, ['-i', filePath], {
       stdio: ['ignore', 'ignore', 'pipe']
     })
 
@@ -537,12 +788,51 @@ export async function probeVideoDurationSec(filePath) {
 
     child.on('close', () => {
       const matched = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
-      if (!matched) {
+      if (matched) {
+        const [, hoursRaw, minutesRaw, secondsRaw] = matched
+        const totalSeconds =
+          Number(hoursRaw) * 3600 + Number(minutesRaw) * 60 + Number.parseFloat(secondsRaw)
+
+        if (Number.isFinite(totalSeconds) && totalSeconds > 0) {
+          resolveCallback(totalSeconds)
+          return
+        }
+      }
+
+      probeVideoDurationByDecoding(filePath, executablePath).then(resolveCallback)
+    })
+  })
+}
+
+/** WebM 可能没有容器时长，必要时解码到 null 输出并读取最后的 time= 进度。 */
+async function probeVideoDurationByDecoding(filePath, executablePath) {
+  return await new Promise((resolveCallback) => {
+    const child = spawn(
+      executablePath,
+      ['-hide_banner', '-nostdin', '-i', filePath, '-map', '0:v:0', '-f', 'null', '-'],
+      {
+        stdio: ['ignore', 'ignore', 'pipe']
+      }
+    )
+
+    let stderr = ''
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString()
+    })
+
+    child.on('error', () => {
+      resolveCallback(null)
+    })
+
+    child.on('close', () => {
+      const matches = [...stderr.matchAll(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)]
+      const lastMatch = matches.at(-1)
+      if (!lastMatch) {
         resolveCallback(null)
         return
       }
 
-      const [, hoursRaw, minutesRaw, secondsRaw] = matched
+      const [, hoursRaw, minutesRaw, secondsRaw] = lastMatch
       const totalSeconds =
         Number(hoursRaw) * 3600 + Number(minutesRaw) * 60 + Number.parseFloat(secondsRaw)
 

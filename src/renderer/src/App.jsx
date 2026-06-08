@@ -183,6 +183,8 @@ function App() {
   const playerParams = useMemo(() => new URLSearchParams(window.location.search), [])
   const playerUrl = playerParams.get('player') || ''
   const editorUrl = playerParams.get('editor') || ''
+  const editorFileUrl = playerParams.get('fileUrl') || ''
+  const editorPath = playerParams.get('path') || ''
   const editorName = playerParams.get('name') || '未命名素材'
   const playerName = playerParams.get('name') || '录制回放'
   const isPlayerWindow = Boolean(playerUrl)
@@ -252,7 +254,14 @@ function App() {
   }
 
   if (isEditorWindow) {
-    return <RecordingCutEditor videoUrl={editorUrl} displayName={editorName} />
+    return (
+      <RecordingCutEditor
+        videoUrl={editorUrl}
+        fileUrl={editorFileUrl}
+        sourcePath={editorPath}
+        displayName={editorName}
+      />
+    )
   }
 
   return (

@@ -6,8 +6,14 @@ import {
   registerRecordingHandlers,
   resolvePreferredRecordingDisplaySource
 } from './recordingHandlers'
-import { createMainWindow, registerRecordingMediaProtocol } from './mediaUtils'
+import {
+  createMainWindow,
+  registerRecordingMediaProtocol,
+  registerRecordingMediaProtocolScheme
+} from './mediaUtils'
 import { recoverPendingRecordingSessions } from './recordingService'
+
+registerRecordingMediaProtocolScheme()
 
 /** 应用准备完成后，初始化主进程录屏能力并启动主窗口。 */
 app.whenReady().then(async () => {

@@ -41,6 +41,14 @@ const api = {
   openScreenRecording: (payload) => ipcRenderer.invoke('openScreenRecording', payload),
   /** 响应功能：打开录屏文件剪辑窗口。 */
   openScreenRecordingEditor: (payload) => ipcRenderer.invoke('openScreenRecordingEditor', payload),
+  /** 响应功能：读取剪辑媒体信息。 */
+  getRecordingEditorMediaInfo: (payload) =>
+    ipcRenderer.invoke('getRecordingEditorMediaInfo', payload),
+  /** 响应功能：抽取录屏剪辑时间线缩略图。 */
+  extractRecordingEditorThumbnails: (payload) =>
+    ipcRenderer.invoke('extractRecordingEditorThumbnails', payload),
+  /** 响应功能：导出录屏剪辑结果。 */
+  exportRecordingEditorCut: (payload) => ipcRenderer.invoke('exportRecordingEditorCut', payload),
   /** 响应功能：在系统文件管理器中定位录屏文件。 */
   revealScreenRecording: (payload) => ipcRenderer.invoke('revealScreenRecording', payload),
   /** 响应功能：删除录屏文件并同步清理关联会话。 */

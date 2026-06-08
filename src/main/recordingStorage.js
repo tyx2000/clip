@@ -826,7 +826,9 @@ export async function buildRecordingItem(filePath, fileStat) {
     : ''
   const probedDurationSec = await probeVideoDurationSec(filePath)
   const durationSec =
-    Number.isFinite(probedDurationSec) && probedDurationSec > 0 ? probedDurationSec : null
+    Number.isFinite(probedDurationSec) && probedDurationSec > 0
+      ? probedDurationSec
+      : metadata?.durationSec || null
   const cloudSync = metadata?.cloudSync || null
 
   return {

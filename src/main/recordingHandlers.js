@@ -17,20 +17,27 @@ import { cleanupRecordingSessionArtifacts } from './recordingFinalizer'
 import {
   createRecordingEditorWindow,
   createRecordingPlayerWindow,
+  exportRecordingCut,
+  extractRecordingThumbnails,
   getPosterPathByVideoPath,
   getRecordingsDirectoryPath,
   isRecordingFilePath,
   getScreenCapturePermissionDetails,
   listCaptureSources,
   openScreenCaptureSettings,
+  probeVideoDurationSec,
   resolvePreferredDisplaySource
 } from './mediaUtils'
 import {
+  buildRecordingItem,
   deleteRecordingFile,
   getRecordingSessionStatus,
   listRecordingItems,
-  saveRecordingFromDataUrl
+  readRecordingMetadata,
+  saveRecordingFromDataUrl,
+  writeRecordingMetadata
 } from './recordingStorage'
+import { stat } from 'fs/promises'
 
 // 这里只保留“用户首选录制源 id”这一份轻量状态。
 // 目的是让 displayMedia 请求和 IPC 设置源之间共享同一个偏好值。
@@ -265,6 +272,84 @@ export function registerRecordingHandlers() {
       return {
         ok: false,
         message: error instanceof Error ? error.message : 'Failed to open editor window.'
+      }
+    }
+  })
+
+  /** 响应功能：抽取剪辑时间线缩略图。 */
+  ipcMain.handle('getRecordingEditorMediaInfo', async (_, payload = {}) => {
+    const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    if (!isRecordingFilePath(filePath)) {
+      return { ok: false, message: 'Invalid recording path.' }
+    }
+
+    try {
+      const metadata = readRecordingMetadata(filePath)
+      const metadataDurationSec = Number(metadata?.durationSec || 0)
+      const durationSec =
+        Number.isFinite(metadataDurationSec) && metadataDurationSec > 0
+          ? metadataDurationSec
+          : await probeVideoDurationSec(filePath)
+      return { ok: true, durationSec }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to probe media.'
+      }
+    }
+  })
+
+  /** 响应功能：抽取剪辑时间线缩略图。 */
+  ipcMain.handle('extractRecordingEditorThumbnails', async (_, payload = {}) => {
+    const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    if (!isRecordingFilePath(filePath)) {
+      return { ok: false, message: 'Invalid recording path.' }
+    }
+
+    try {
+      const thumbnails = await extractRecordingThumbnails({
+        filePath,
+        times: payload?.times,
+        width: payload?.width,
+        height: payload?.height
+      })
+      return { ok: true, thumbnails }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to extract thumbnails.'
+      }
+    }
+  })
+
+  /** 响应功能：导出剪辑后的录屏文件。 */
+  ipcMain.handle('exportRecordingEditorCut', async (_, payload = {}) => {
+    const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    if (!isRecordingFilePath(filePath)) {
+      return { ok: false, message: 'Invalid recording path.' }
+    }
+
+    try {
+      const outputPath = await exportRecordingCut({
+        filePath,
+        clips: payload?.clips,
+        output: payload?.output
+      })
+      const outputStat = await stat(outputPath)
+      await writeRecordingMetadata(outputPath, {
+        durationSec: null,
+        source: {
+          type: 'editor-cut',
+          path: filePath,
+          createdAt: Date.now()
+        }
+      })
+      const item = await buildRecordingItem(outputPath, outputStat)
+      return { ok: true, item, outputPath }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to export cut.'
       }
     }
   })
