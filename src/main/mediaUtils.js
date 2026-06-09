@@ -552,27 +552,20 @@ async function canRunFfmpeg(candidatePath) {
   })
 }
 
-/** 返回当前机器上可运行的 ffmpeg，优先使用依赖内置版本，失败后回退系统版本。 */
+/** 返回当前应用依赖内置的 ffmpeg，不能依赖系统路径以保证 Electron 跨平台分发。 */
 async function resolveFfmpegExecutable() {
   if (resolvedFfmpegPath) {
     return resolvedFfmpegPath
   }
 
-  const candidates = [
-    ffmpegPath,
-    '/opt/homebrew/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg',
-    'ffmpeg'
-  ].filter(Boolean)
-
-  for (const candidatePath of [...new Set(candidates)]) {
-    if (await canRunFfmpeg(candidatePath)) {
-      resolvedFfmpegPath = candidatePath
-      return resolvedFfmpegPath
-    }
+  if (await canRunFfmpeg(ffmpegPath)) {
+    resolvedFfmpegPath = ffmpegPath
+    return resolvedFfmpegPath
   }
 
-  throw new Error('No runnable ffmpeg binary is available.')
+  throw new Error(
+    `Bundled ffmpeg binary is not runnable for ${process.platform}/${process.arch}. Reinstall ffmpeg-static for the target platform.`
+  )
 }
 
 /** 执行一次 ffmpeg 命令，并在失败时抛出带上下文的错误。 */
