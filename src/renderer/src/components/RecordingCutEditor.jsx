@@ -7,6 +7,7 @@ const HISTORY_LIMIT = 80
 const TIMELINE_ZOOM_DEFAULT = 10
 const TIMELINE_ZOOM_MIN = 4
 const TIMELINE_ZOOM_MAX = 80
+const TRACK_GUTTER_WIDTH = 16
 const DEFAULT_EXPORT = {
   bitrate: 4_000_000,
   fps: 30,
@@ -15,6 +16,7 @@ const DEFAULT_EXPORT = {
 }
 const OVERLAY_FADE_SECONDS = 0.35
 const DEFAULT_TRANSITION = 'rotateY'
+const CENTER_SNAP_THRESHOLD = 1.5
 const TEXT_DEFAULTS = {
   align: 'center',
   backgroundAlpha: 0.58,
@@ -31,7 +33,7 @@ const TEXT_DEFAULTS = {
   strokeWidth: 0
 }
 
-const TRACKS = [
+const BASE_TRACKS = [
   { id: 'video', label: '视频', kind: 'video' },
   { id: 'audio', label: '音频', kind: 'audio' },
   { id: 'image', label: '叠图', kind: 'image' },
@@ -53,9 +55,29 @@ const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 const Shell = styled.main`
   height: 100%;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(220px, 34vh);
+  grid-template-rows: minmax(0, 1fr) 7px ${({ $timelineHeight }) => `${$timelineHeight}px`};
   background: #111418;
   color: #f5f7fb;
+`
+
+const TimelineResizeHandle = styled.div`
+  position: relative;
+  border-top: 1px solid #252b34;
+  border-bottom: 1px solid #252b34;
+  background: #15191f;
+  cursor: ns-resize;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 54px;
+    height: 2px;
+    border-radius: 999px;
+    background: #3a424f;
+    transform: translate(-50%, -50%);
+  }
 `
 
 const SubTitle = styled.p`
@@ -164,6 +186,50 @@ const PreviewOverlayLayer = styled.div`
   position: absolute;
   inset: 0;
   pointer-events: auto;
+`
+
+const CenterGuide = styled.span`
+  position: absolute;
+  display: ${({ $visible }) => ($visible ? 'block' : 'none')};
+  pointer-events: none;
+  z-index: 20;
+
+  ${({ $axis }) =>
+    $axis === 'x'
+      ? `
+        top: 0;
+        bottom: 0;
+        left: 50%;
+        border-left: 1px dashed rgba(90, 167, 255, 0.92);
+      `
+      : `
+        left: 0;
+        right: 0;
+        top: 50%;
+        border-top: 1px dashed rgba(90, 167, 255, 0.92);
+      `}
+
+  &::after {
+    content: '';
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: #5aa7ff;
+    box-shadow: 0 0 0 3px rgba(90, 167, 255, 0.16);
+    ${({ $axis }) =>
+      $axis === 'x'
+        ? `
+          top: 50%;
+          left: -4px;
+          transform: translateY(-50%);
+        `
+        : `
+          left: 50%;
+          top: -4px;
+          transform: translateX(-50%);
+        `}
+  }
 `
 
 const PreviewImage = styled.img`
@@ -368,6 +434,15 @@ const TimelineTransport = styled.div`
   gap: 8px;
 `
 
+const InlineStatus = styled.span`
+  max-width: 220px;
+  color: #a9b2c0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`
+
 const ZoomLabel = styled.span`
   color: #a9b2c0;
   font-size: 12px;
@@ -389,7 +464,9 @@ const RulerViewport = styled.div`
 const Ruler = styled.div`
   position: relative;
   height: 24px;
-  margin-left: 92px;
+  margin-left: ${TRACK_GUTTER_WIDTH}px;
+  cursor: ew-resize;
+  user-select: none;
 `
 
 const Tick = styled.span`
@@ -416,6 +493,28 @@ const Tick = styled.span`
 const TrackViewport = styled.div`
   position: relative;
   overflow: auto;
+  scrollbar-color: #343b47 #111418;
+  scrollbar-width: thin;
+
+  &::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+    background: #111418;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #111418;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border: 2px solid #111418;
+    border-radius: 999px;
+    background: #343b47;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background: #424b58;
+  }
 `
 
 const TrackContent = styled.div`
@@ -426,20 +525,14 @@ const TrackContent = styled.div`
 
 const TrackRow = styled.div`
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: ${TRACK_GUTTER_WIDTH}px minmax(0, 1fr);
   min-height: 56px;
   border-bottom: 1px solid #252b34;
 `
 
 const TrackLabel = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: center;
   border-right: 1px solid #252b34;
   background: #15191f;
-  color: #a9b2c0;
-  font-size: 12px;
-  font-weight: 700;
 `
 
 const Lane = styled.div`
@@ -528,44 +621,50 @@ const ClipIcon = styled.span`
   }
 `
 
-const Waveform = styled.div`
-  position: absolute;
-  inset: 7px 18px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  opacity: 0.84;
-  pointer-events: none;
-`
-
-const WaveBar = styled.span`
-  flex: 1 1 0;
-  min-width: 1px;
-  height: ${({ $value }) => `${Math.max(12, Math.round($value * 100))}%`};
-  border-radius: 999px;
-  background: rgba(210, 255, 229, 0.86);
-`
-
 const EdgeHandle = styled.span`
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 14px;
-  ${({ $side }) => ($side === 'left' ? 'left: 0;' : 'right: 0;')}
+  top: 4px;
+  bottom: 4px;
+  width: 7px;
+  ${({ $side }) =>
+    $side === 'left'
+      ? 'left: 0; border-radius: 7px 2px 2px 7px;'
+      : 'right: 0; border-radius: 2px 7px 7px 2px;'}
   cursor: ew-resize;
-  background: linear-gradient(
-    ${({ $side }) => ($side === 'left' ? '90deg' : '270deg')},
-    rgba(255, 255, 255, 0.28),
-    rgba(255, 255, 255, 0)
-  );
+  background: rgba(245, 247, 251, 0.72);
+  border: 1px solid rgba(17, 20, 24, 0.48);
+  box-shadow: none;
   z-index: 2;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    top: 7px;
+    bottom: 7px;
+    width: 1px;
+    border-radius: 999px;
+    background: rgba(17, 20, 24, 0.62);
+  }
+
+  &::before {
+    left: 2px;
+  }
+
+  &::after {
+    right: 2px;
+  }
+
+  ${Clip}:hover & {
+    background: #ffffff;
+  }
 `
 
 const Playhead = styled.div`
   position: absolute;
   top: 0;
   bottom: 0;
-  left: var(--playhead-left, 92px);
+  left: var(--playhead-left, ${TRACK_GUTTER_WIDTH}px);
   width: 12px;
   transform: translateX(-5px);
   background: transparent;
@@ -644,13 +743,96 @@ function getTimelineEnd(clips, fallbackDuration) {
   )
 }
 
-function getTrackEnd(clips, trackId) {
+function getKindEnd(clips, kind) {
   return Math.max(
     0,
     ...clips
-      .filter((clip) => clip.trackId === trackId)
+      .filter((clip) => clip.kind === kind)
       .map((clip) => Number(clip.startTime || 0) + Number(clip.duration || 0))
   )
+}
+
+function getTrackKind(trackId) {
+  const normalized = String(trackId || '')
+  return BASE_TRACKS.find(
+    (track) => normalized === track.kind || normalized.startsWith(`${track.kind}-`)
+  )?.kind
+}
+
+function getTrackIndex(trackId, kind = getTrackKind(trackId)) {
+  const normalized = String(trackId || '')
+  if (normalized === kind) {
+    return 1
+  }
+
+  const suffix = Number(normalized.slice(String(kind || '').length + 1))
+  return Number.isFinite(suffix) && suffix > 1 ? suffix : 1
+}
+
+function createTrackId(kind, index) {
+  return index <= 1 ? kind : `${kind}-${index}`
+}
+
+function getTimelineTracks(clips) {
+  return BASE_TRACKS.flatMap((track) => {
+    const maxIndex = Math.max(
+      1,
+      ...clips
+        .filter((clip) => clip.kind === track.kind)
+        .map((clip) => getTrackIndex(clip.trackId, track.kind))
+    )
+
+    return Array.from({ length: maxIndex }, (_, index) => ({
+      id: createTrackId(track.kind, index + 1),
+      kind: track.kind
+    }))
+  })
+}
+
+function clipsOverlap(startA, durationA, startB, durationB) {
+  const endA = startA + durationA
+  const endB = startB + durationB
+  return startA < endB && startB < endA
+}
+
+function hasTrackOverlap(clips, candidate, trackId = candidate.trackId) {
+  return clips.some(
+    (clip) =>
+      clip.id !== candidate.id &&
+      clip.kind === candidate.kind &&
+      clip.trackId === trackId &&
+      clipsOverlap(candidate.startTime, candidate.duration, clip.startTime, clip.duration)
+  )
+}
+
+function getNextTrackId(clips, kind) {
+  const maxIndex = Math.max(
+    1,
+    ...clips.filter((clip) => clip.kind === kind).map((clip) => getTrackIndex(clip.trackId, kind))
+  )
+  return createTrackId(kind, maxIndex + 1)
+}
+
+function getAvailableTrackId(clips, kind, startTime, duration) {
+  const candidate = {
+    duration,
+    id: '__candidate__',
+    kind,
+    startTime
+  }
+  const tracks = getTimelineTracks(clips).filter((track) => track.kind === kind)
+  const availableTrack = tracks.find((track) => !hasTrackOverlap(clips, candidate, track.id))
+  return availableTrack?.id || getNextTrackId(clips, kind)
+}
+
+function resolveDraggedClipTrackOverlap(clips, clipId) {
+  const draggedClip = clips.find((clip) => clip.id === clipId)
+  if (!draggedClip || !hasTrackOverlap(clips, draggedClip)) {
+    return clips
+  }
+
+  const nextTrackId = getNextTrackId(clips, draggedClip.kind)
+  return clips.map((clip) => (clip.id === clipId ? { ...clip, trackId: nextTrackId } : clip))
 }
 
 function getClipEnd(clip) {
@@ -678,18 +860,6 @@ function getClipThumbnails(clip, thumbnails) {
   )
 
   return clippedThumbnails.length ? clippedThumbnails : sourceThumbnails
-}
-
-function getClipWaveform(clip) {
-  const waveform = clip.waveform?.length ? clip.waveform : createFallbackWaveform()
-  const sourceDuration = Math.max(MIN_CLIP_DURATION, Number(clip.sourceDuration || clip.duration))
-  const sourceStart = Math.max(0, Number(clip.sourceStart || 0))
-  const sourceEnd = Math.min(sourceDuration, sourceStart + Number(clip.duration || 0))
-  const startIndex = Math.floor((sourceStart / sourceDuration) * waveform.length)
-  const endIndex = Math.ceil((sourceEnd / sourceDuration) * waveform.length)
-  const sliced = waveform.slice(startIndex, Math.max(startIndex + 1, endIndex))
-
-  return sliced.length ? sliced : waveform
 }
 
 function isClipActiveAtTime(clip, time) {
@@ -800,11 +970,101 @@ function clampOverlayPosition(x, y, bounds) {
   }
 }
 
+function snapOverlayToCenter(position) {
+  const snapX = Math.abs(position.x - 50) <= CENTER_SNAP_THRESHOLD
+  const snapY = Math.abs(position.y - 50) <= CENTER_SNAP_THRESHOLD
+
+  return {
+    guides: { x: snapX, y: snapY },
+    position: {
+      x: snapX ? 50 : position.x,
+      y: snapY ? 50 : position.y
+    }
+  }
+}
+
 function createFallbackWaveform(bucketCount = 72) {
   return Array.from({ length: bucketCount }, (_, index) => {
     const phase = index / Math.max(1, bucketCount - 1)
     return 0.18 + Math.abs(Math.sin(phase * Math.PI * 5)) * 0.72
   })
+}
+
+function getUserFilePath(file) {
+  if (!file) {
+    return ''
+  }
+
+  return window.api?.getPathForFile?.(file) || file.path || ''
+}
+
+function toPlayableFileUrl(filePath) {
+  if (!filePath) {
+    return ''
+  }
+
+  return window.api?.toFileUrl?.(filePath) || ''
+}
+
+function createUserMediaSource(file) {
+  const sourcePath = getUserFilePath(file)
+  const fileUrl = toPlayableFileUrl(sourcePath)
+  if (fileUrl) {
+    return { shouldRevoke: false, sourcePath, sourceUrl: fileUrl }
+  }
+
+  return { shouldRevoke: true, sourcePath, sourceUrl: URL.createObjectURL(file) }
+}
+
+function getProjectStorageKey(sourcePath) {
+  return sourcePath ? `recording-cut-project:${sourcePath}` : ''
+}
+
+function serializeClipForExport(clip, fallbackVideoPath) {
+  const base = {
+    align: clip.align,
+    backgroundAlpha: clip.backgroundAlpha,
+    backgroundColor: clip.backgroundColor,
+    color: clip.color,
+    duration: clip.duration,
+    fontFamily: clip.fontFamily,
+    fontSize: clip.fontSize,
+    fontWeight: clip.fontWeight,
+    kind: clip.kind,
+    label: clip.label,
+    lineHeight: clip.lineHeight,
+    muted: clip.muted,
+    opacity: clip.opacity,
+    scale: clip.scale,
+    shadowBlur: clip.shadowBlur,
+    shadowColor: clip.shadowColor,
+    shadowDistance: clip.shadowDistance,
+    sourceStart: clip.sourceStart || 0,
+    startTime: clip.startTime,
+    strokeColor: clip.strokeColor,
+    strokeWidth: clip.strokeWidth,
+    transitionSeconds: clip.transitionSeconds,
+    transitionType: clip.transitionType,
+    volume: clip.volume,
+    x: clip.x,
+    y: clip.y
+  }
+
+  if (clip.kind === 'video') {
+    return {
+      ...base,
+      sourcePath: clip.sourcePath || fallbackVideoPath
+    }
+  }
+
+  if (clip.kind === 'audio' || clip.kind === 'image') {
+    return {
+      ...base,
+      sourcePath: clip.sourcePath || ''
+    }
+  }
+
+  return base
 }
 
 async function analyzeAudioFile(file, bucketCount = 88) {
@@ -963,8 +1223,11 @@ ToolIcon.propTypes = {
 function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const videoRef = useRef(null)
   const playheadRef = useRef(null)
+  const rulerViewportRef = useRef(null)
+  const trackViewportRef = useRef(null)
   const timeCodeRef = useRef(null)
   const dragRef = useRef(null)
+  const dividerDragRef = useRef(null)
   const scrubDragRef = useRef(null)
   const wasPlayingBeforeScrubRef = useRef(false)
   const audioInputRef = useRef(null)
@@ -979,6 +1242,8 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const timelinePlaybackRef = useRef({ startedAt: 0, startTime: 0 })
   const overlayDragRef = useRef(null)
   const mediaMetadataInitializedRef = useRef(false)
+  const projectRestoredRef = useRef(false)
+  const isTimelinePlayingRef = useRef(false)
   const animationFrameRef = useRef(0)
   const currentTimeRef = useRef(0)
   const durationRef = useRef(0)
@@ -1001,11 +1266,17 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const [thumbStatus, setThumbStatus] = useState('idle')
   const [exportSettings, setExportSettings] = useState(DEFAULT_EXPORT)
   const [exportStatus, setExportStatus] = useState('')
+  const [isExporting, setIsExporting] = useState(false)
   const [playbackStatus, setPlaybackStatus] = useState('')
   const [mediaUrl, setMediaUrl] = useState(fileUrl || videoUrl)
   const [mediaName] = useState(displayName)
   const [isPreviewVideoVisible, setIsPreviewVideoVisible] = useState(true)
   const [visiblePreviewClips, setVisiblePreviewClips] = useState([])
+  const [centerGuides, setCenterGuides] = useState({ x: false, y: false })
+  const [timelineHeight, setTimelineHeight] = useState(() =>
+    typeof window === 'undefined' ? 260 : Math.max(220, Math.round(window.innerHeight * 0.34))
+  )
+  const projectStorageKey = useMemo(() => getProjectStorageKey(sourcePath), [sourcePath])
 
   const selectedClip = useMemo(
     () => clips.find((clip) => clip.id === selectedClipId) || null,
@@ -1030,6 +1301,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     () => clips.filter((clip) => clip.kind === 'video').sort((a, b) => a.startTime - b.startTime),
     [clips]
   )
+  const timelineTracks = useMemo(() => getTimelineTracks(clips), [clips])
 
   function pushHistory(nextClips = clips) {
     setHistory((previous) => [...previous.slice(-HISTORY_LIMIT + 1), cloneClips(nextClips)])
@@ -1205,10 +1477,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     setVisiblePreviewClips(overlays)
   }
 
-  function syncAudioPlayback(
-    time,
-    playing = Boolean(videoRef.current && !videoRef.current.paused)
-  ) {
+  function syncAudioPlayback(time, playing = isTimelinePlayingRef.current) {
     let hasActiveAudio = false
 
     for (const clip of clipsRef.current) {
@@ -1249,9 +1518,16 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     }
   }
 
-  function syncTimelineUi(nextTime = currentTimeRef.current, { playing = false } = {}) {
+  function handleTimelineScroll(event) {
+    if (rulerViewportRef.current) {
+      rulerViewportRef.current.scrollLeft = event.currentTarget.scrollLeft
+    }
+  }
+
+  function syncTimelineChrome(nextTime = currentTimeRef.current) {
     const safeTime = Math.max(0, Number(nextTime) || 0)
     currentTimeRef.current = safeTime
+    const playheadLeft = safeTime * zoomRef.current + TRACK_GUTTER_WIDTH
 
     if (timeCodeRef.current) {
       timeCodeRef.current.textContent = `${formatEditorTime(safeTime)} / ${formatEditorTime(
@@ -1260,12 +1536,17 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     }
 
     if (playheadRef.current) {
-      playheadRef.current.style.setProperty(
-        '--playhead-left',
-        `${safeTime * zoomRef.current + 92}px`
-      )
+      playheadRef.current.style.setProperty('--playhead-left', `${playheadLeft}px`)
     }
 
+    return safeTime
+  }
+
+  function syncTimelineUi(
+    nextTime = currentTimeRef.current,
+    { playing = isTimelinePlayingRef.current } = {}
+  ) {
+    const safeTime = syncTimelineChrome(nextTime)
     syncPreviewOverlays(safeTime)
     syncVideoPlayback(safeTime, playing)
     syncAudioPlayback(safeTime, playing)
@@ -1280,6 +1561,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
 
   function pauseTimelinePlayback() {
     stopTimelineAnimation()
+    isTimelinePlayingRef.current = false
     setIsPlaying(false)
     syncTimelineUi(currentTimeRef.current, { playing: false })
   }
@@ -1290,6 +1572,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       startedAt: performance.now(),
       startTime: safeStart
     }
+    isTimelinePlayingRef.current = true
     setIsPlaying(true)
     setPlaybackStatus('')
     stopTimelineAnimation()
@@ -1325,7 +1608,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     zoomRef.current = zoom
     clipsRef.current = clips
     videoClipsRef.current = videoClips
-    syncTimelineUi()
+    syncTimelineChrome(currentTimeRef.current, { playing: isTimelinePlayingRef.current })
   })
 
   useEffect(() => {
@@ -1351,10 +1634,80 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
         audioElementsRef.current.delete(clipId)
       }
     }
-    syncTimelineUi()
+    syncTimelineUi(currentTimeRef.current, { playing: isTimelinePlayingRef.current })
     // syncTimelineUi reads refs intentionally; adding it would re-run this cleanup sync every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips])
+
+  useEffect(() => {
+    if (!projectStorageKey || !duration || projectRestoredRef.current) {
+      return
+    }
+
+    projectRestoredRef.current = true
+    try {
+      const rawProject = window.localStorage.getItem(projectStorageKey)
+      if (!rawProject) {
+        return
+      }
+
+      const project = JSON.parse(rawProject)
+      const restoredClips = Array.isArray(project?.clips)
+        ? project.clips
+            .filter((clip) => clip?.id && clip?.kind && clip?.trackId)
+            .map((clip) => {
+              const sourceUrl =
+                clip.sourcePath &&
+                (clip.kind === 'audio' || clip.kind === 'image' || clip.sourcePath !== sourcePath)
+                  ? toPlayableFileUrl(clip.sourcePath)
+                  : clip.sourceUrl || ''
+              return {
+                ...clip,
+                sourceUrl
+              }
+            })
+        : []
+
+      if (!restoredClips.length) {
+        return
+      }
+
+      setClips(restoredClips)
+      setSelectedClipId(restoredClips[0]?.id || '')
+      if (project?.exportSettings) {
+        setExportSettings((settings) => ({ ...settings, ...project.exportSettings }))
+      }
+      setPlaybackStatus('已恢复上次剪辑工程')
+    } catch {
+      setPlaybackStatus('剪辑工程恢复失败')
+    }
+  }, [duration, projectStorageKey, sourcePath])
+
+  useEffect(() => {
+    if (!projectStorageKey || !clips.length) {
+      return undefined
+    }
+
+    const saveTimer = window.setTimeout(() => {
+      const serializableClips = clips.map(({ sourceUrl, thumbnails: clipThumbnails, ...clip }) => ({
+        ...clip,
+        hasPreviewSource: Boolean(sourceUrl),
+        hasThumbnails: Boolean(clipThumbnails?.length)
+      }))
+      window.localStorage.setItem(
+        projectStorageKey,
+        JSON.stringify({
+          clips: serializableClips,
+          exportSettings,
+          savedAt: Date.now()
+        })
+      )
+    }, 250)
+
+    return () => {
+      window.clearTimeout(saveTimer)
+    }
+  }, [clips, exportSettings, projectStorageKey])
 
   useEffect(() => {
     const video = videoRef.current
@@ -1500,6 +1853,14 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
 
   useEffect(() => {
     const handleMove = (event) => {
+      const dividerDrag = dividerDragRef.current
+      if (dividerDrag) {
+        const deltaY = event.clientY - dividerDrag.clientY
+        const maxHeight = Math.max(220, window.innerHeight - 180)
+        setTimelineHeight(clamp(dividerDrag.height - deltaY, 180, maxHeight))
+        return
+      }
+
       const overlayDrag = overlayDragRef.current
       if (overlayDrag) {
         if (overlayDrag.mode === 'resize') {
@@ -1526,10 +1887,14 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
           return
         }
 
-        const nextPosition = clampOverlayPosition(
+        const rawPosition = clampOverlayPosition(
           overlayDrag.x + ((event.clientX - overlayDrag.clientX) / overlayDrag.width) * 100,
           overlayDrag.y + ((event.clientY - overlayDrag.clientY) / overlayDrag.height) * 100,
           overlayDrag.bounds
+        )
+        const { guides, position: nextPosition } = snapOverlayToCenter(rawPosition)
+        setCenterGuides((previous) =>
+          previous.x === guides.x && previous.y === guides.y ? previous : guides
         )
         setClips((previous) =>
           previous.map((clip) =>
@@ -1601,11 +1966,17 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       )
     }
     const handleEnd = () => {
+      const completedDrag = dragRef.current
       if (scrubDragRef.current && wasPlayingBeforeScrubRef.current) {
         startTimelinePlayback(currentTimeRef.current)
       }
+      if (completedDrag) {
+        setClips((previous) => resolveDraggedClipTrackOverlap(previous, completedDrag.clipId))
+      }
       dragRef.current = null
+      dividerDragRef.current = null
       overlayDragRef.current = null
+      setCenterGuides({ x: false, y: false })
       scrubDragRef.current = null
       wasPlayingBeforeScrubRef.current = false
     }
@@ -1714,15 +2085,38 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     }
     const rect = event.currentTarget.parentElement.getBoundingClientRect()
     scrubDragRef.current = {
-      left: rect.left + 92
+      left: rect.left + TRACK_GUTTER_WIDTH
     }
     seekTo((event.clientX - scrubDragRef.current.left) / zoom)
   }
 
+  function startRulerScrub(event) {
+    event.preventDefault()
+    event.stopPropagation()
+    wasPlayingBeforeScrubRef.current = isPlaying
+    if (wasPlayingBeforeScrubRef.current) {
+      pauseTimelinePlayback()
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    scrubDragRef.current = {
+      left: rect.left
+    }
+    seekTo((event.clientX - scrubDragRef.current.left) / zoom)
+  }
+
+  function startTimelineResize(event) {
+    event.preventDefault()
+    event.stopPropagation()
+    dividerDragRef.current = {
+      clientY: event.clientY,
+      height: timelineHeight
+    }
+  }
+
   function addClip(kind) {
-    const track = TRACKS.find((item) => item.kind === kind) || TRACKS[0]
     const time = currentTimeRef.current
     const clipDuration = kind === 'video' ? Math.min(4, Math.max(1, duration - time)) : 3
+    const startTime = roundTime(time)
     const clip = {
       duration: Math.max(MIN_CLIP_DURATION, clipDuration),
       id: createId(kind),
@@ -1733,8 +2127,13 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       opacity: 1,
       scale: kind === 'image' ? 28 : 1,
       sourceStart: kind === 'video' ? clamp(time, 0, duration) : 0,
-      startTime: roundTime(time),
-      trackId: track.id,
+      startTime,
+      trackId: getAvailableTrackId(
+        clipsRef.current,
+        kind,
+        startTime,
+        Math.max(MIN_CLIP_DURATION, clipDuration)
+      ),
       transitionSeconds: 0.25,
       transitionType: DEFAULT_TRANSITION,
       volume: 1,
@@ -1754,9 +2153,10 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       return
     }
 
-    const track = TRACKS.find((item) => item.kind === 'audio') || TRACKS[1]
-    const sourceUrl = URL.createObjectURL(file)
-    objectAssetUrlsRef.current.add(sourceUrl)
+    const { shouldRevoke, sourcePath: clipSourcePath, sourceUrl } = createUserMediaSource(file)
+    if (shouldRevoke) {
+      objectAssetUrlsRef.current.add(sourceUrl)
+    }
     const audioInfo = await analyzeAudioFile(file).catch(() => ({
       duration: 3,
       waveform: createFallbackWaveform()
@@ -1769,9 +2169,15 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       muted: false,
       sourceStart: 0,
       sourceDuration: Math.max(MIN_CLIP_DURATION, Number(audioInfo.duration) || 3),
+      sourcePath: clipSourcePath,
       sourceUrl,
       startTime: roundTime(currentTimeRef.current),
-      trackId: track.id,
+      trackId: getAvailableTrackId(
+        clipsRef.current,
+        'audio',
+        roundTime(currentTimeRef.current),
+        Math.max(MIN_CLIP_DURATION, Number(audioInfo.duration) || 3)
+      ),
       volume: 1,
       waveform: audioInfo.waveform
     }
@@ -1788,9 +2194,10 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       return
     }
 
-    const track = TRACKS.find((item) => item.kind === 'image') || TRACKS[2]
-    const sourceUrl = URL.createObjectURL(file)
-    objectAssetUrlsRef.current.add(sourceUrl)
+    const { shouldRevoke, sourcePath: clipSourcePath, sourceUrl } = createUserMediaSource(file)
+    if (shouldRevoke) {
+      objectAssetUrlsRef.current.add(sourceUrl)
+    }
     const clip = {
       duration: 3,
       id: createId('image'),
@@ -1800,9 +2207,10 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       opacity: 1,
       scale: 28,
       sourceStart: 0,
+      sourcePath: clipSourcePath,
       sourceUrl,
       startTime: roundTime(currentTimeRef.current),
-      trackId: track.id,
+      trackId: getAvailableTrackId(clipsRef.current, 'image', roundTime(currentTimeRef.current), 3),
       transitionSeconds: 0.25,
       transitionType: DEFAULT_TRANSITION,
       volume: 1,
@@ -1822,11 +2230,18 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       return
     }
 
-    const nextUrl = URL.createObjectURL(file)
-    objectAssetUrlsRef.current.add(nextUrl)
+    const {
+      shouldRevoke,
+      sourcePath: clipSourcePath,
+      sourceUrl: nextUrl
+    } = createUserMediaSource(file)
+    if (shouldRevoke) {
+      objectAssetUrlsRef.current.add(nextUrl)
+    }
     try {
       const info = await loadVideoFileInfo(nextUrl)
       const nextDuration = Math.max(MIN_CLIP_DURATION, Number(info.duration) || 3)
+      const startTime = roundTime(getKindEnd(clipsRef.current, 'video'))
       const clip = {
         duration: nextDuration,
         id: createId('video'),
@@ -1835,18 +2250,21 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
         muted: false,
         sourceDuration: nextDuration,
         sourceStart: 0,
+        sourcePath: clipSourcePath,
         sourceUrl: nextUrl,
-        startTime: roundTime(getTrackEnd(clipsRef.current, 'video')),
+        startTime,
         thumbnails: await extractVideoFileThumbnails(nextUrl, nextDuration).catch(() => []),
-        trackId: 'video',
+        trackId: getAvailableTrackId(clipsRef.current, 'video', startTime, nextDuration),
         volume: 1
       }
       applyClips((previous) => [...previous, clip])
       setSelectedClipId(clip.id)
-      setPlaybackStatus('导入视频已追加到视频轨，导出暂未合并外部视频')
+      setPlaybackStatus('导入视频已追加到视频轨')
     } catch (error) {
-      URL.revokeObjectURL(nextUrl)
-      objectAssetUrlsRef.current.delete(nextUrl)
+      if (shouldRevoke) {
+        URL.revokeObjectURL(nextUrl)
+        objectAssetUrlsRef.current.delete(nextUrl)
+      }
       const message = error instanceof Error ? error.message : '导入视频失败'
       setPlaybackStatus(message)
     }
@@ -1992,8 +2410,12 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   }
 
   async function exportCut() {
+    if (isExporting) {
+      return
+    }
+
     if (!sourcePath || typeof window.api?.exportRecordingEditorCut !== 'function') {
-      setExportStatus('导出 TODO: 缺少主进程导出接口')
+      setExportStatus('导出失败：缺少主进程导出接口')
       return
     }
 
@@ -2002,27 +2424,32 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       return
     }
 
-    setExportStatus('导出中')
-    const result = await window.api.exportRecordingEditorCut({
-      path: sourcePath,
-      clips: videoClips.map((clip) => ({
-        duration: clip.duration,
-        sourceStart: clip.sourceStart || 0,
-        startTime: clip.startTime
-      })),
-      output: exportSettings
-    })
+    setIsExporting(true)
+    setExportStatus('导出中...')
+    try {
+      const result = await window.api.exportRecordingEditorCut({
+        path: sourcePath,
+        clips: clips.map((clip) => serializeClipForExport(clip, sourcePath)),
+        output: {
+          ...exportSettings,
+          duration: timelineDuration
+        }
+      })
 
-    if (!result?.ok) {
-      setExportStatus(result?.message || '导出失败')
-      return
+      if (!result?.ok) {
+        setExportStatus(result?.message || '导出失败')
+        return
+      }
+
+      setExportStatus(`已导出 ${result.item?.name || result.outputPath || ''}`)
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : '导出失败')
+    } finally {
+      setIsExporting(false)
     }
-
-    setExportStatus(`已导出 ${result.item?.name || result.outputPath || ''}`)
   }
 
   const activeToolMeta = TOOLS.find((tool) => tool.id === activeTool) || TOOLS[0]
-  const selectedTrack = TRACKS.find((track) => track.id === selectedClip?.trackId)
   const selectedSupportsAudio = selectedClip?.kind === 'video' || selectedClip?.kind === 'audio'
   const selectedIsOverlay = selectedClip?.kind === 'image' || selectedClip?.kind === 'text'
   const selectedIsText = selectedClip?.kind === 'text'
@@ -2031,12 +2458,13 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     { done: true, label: '视频裁剪拼接' },
     { done: true, label: '时间线缩略图' },
     { done: true, label: '逐帧定位' },
-    { done: false, label: '音频混音导出' },
-    { done: false, label: '贴图/字幕烘焙' }
+    { done: true, label: '音频混音导出' },
+    { done: true, label: '贴图/字幕烘焙' },
+    { done: true, label: '工程状态恢复' }
   ]
 
   return (
-    <Shell>
+    <Shell $timelineHeight={timelineHeight}>
       <HiddenInput
         ref={audioInputRef}
         type="file"
@@ -2059,12 +2487,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
         <PreviewColumn>
           <PreviewHeader>
             <span>{activeToolMeta.label}</span>
-            <span>
-              {playbackStatus ||
-                (selectedClip
-                  ? `${selectedTrack?.label || ''} · ${selectedClip.label}`
-                  : 'No selection')}
-            </span>
+            <span>{playbackStatus || (selectedClip ? selectedClip.label : 'No selection')}</span>
           </PreviewHeader>
           <PreviewStage>
             <PreviewFrame>
@@ -2076,6 +2499,8 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
                 $visible={isPreviewVideoVisible}
               />
               <PreviewOverlayLayer>
+                <CenterGuide $axis="x" $visible={centerGuides.x} />
+                <CenterGuide $axis="y" $visible={centerGuides.y} />
                 {visiblePreviewClips
                   .filter((clip) => clip.kind === 'image' && clip.sourceUrl)
                   .map((clip) => (
@@ -2485,13 +2910,14 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
               {capabilityState.map((item) => (
                 <TodoItem key={item.label}>
                   <span>{item.label}</span>
-                  <TodoState $done={item.done}>{item.done ? 'ready' : 'todo'}</TodoState>
+                  <TodoState $done={item.done}>{item.done ? 'ready' : 'pending'}</TodoState>
                 </TodoItem>
               ))}
             </TodoList>
           </Panel>
         </Inspector>
       </Workspace>
+      <TimelineResizeHandle onPointerDown={startTimelineResize} />
 
       <Timeline>
         <TimelineTop>
@@ -2547,15 +2973,22 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
             <IconButton type="button" title="Reset" onClick={resetProject}>
               ↺
             </IconButton>
-            <IconButton type="button" title="Export" $primary onClick={exportCut}>
+            <IconButton
+              type="button"
+              title={isExporting ? 'Exporting' : 'Export'}
+              $primary
+              onClick={exportCut}
+              disabled={isExporting}
+            >
               ⇩
             </IconButton>
+            {exportStatus ? <InlineStatus title={exportStatus}>{exportStatus}</InlineStatus> : null}
             <ZoomLabel>{Math.round(zoom)} px/s</ZoomLabel>
           </TimelineEditActions>
         </TimelineTop>
 
-        <RulerViewport>
-          <Ruler style={{ width: timelineWidth }}>
+        <RulerViewport ref={rulerViewportRef}>
+          <Ruler style={{ width: timelineWidth }} onPointerDown={startRulerScrub}>
             {rulerTicks.map((tick) => (
               <Tick key={`${tick.left}-${tick.label}`} $left={tick.left}>
                 {tick.label}
@@ -2564,12 +2997,12 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
           </Ruler>
         </RulerViewport>
 
-        <TrackViewport>
-          <TrackContent style={{ width: timelineWidth + 92 }}>
+        <TrackViewport ref={trackViewportRef} onScroll={handleTimelineScroll}>
+          <TrackContent style={{ width: timelineWidth + TRACK_GUTTER_WIDTH }}>
             <Playhead ref={playheadRef} onPointerDown={startPlayheadDrag} />
-            {TRACKS.map((track) => (
+            {timelineTracks.map((track) => (
               <TrackRow key={track.id}>
-                <TrackLabel>{track.label}</TrackLabel>
+                <TrackLabel />
                 <Lane $kind={track.kind} onPointerDown={handleLanePointerDown}>
                   {clips
                     .filter((clip) => clip.trackId === track.id)
@@ -2604,13 +3037,6 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
                             <ClipThumbs>
                               <ClipThumb src={clip.sourceUrl} alt="" draggable={false} />
                             </ClipThumbs>
-                          ) : null}
-                          {clip.kind === 'audio' ? (
-                            <Waveform>
-                              {getClipWaveform(clip).map((value, index) => (
-                                <WaveBar key={`${clip.id}-${index}`} $value={value} />
-                              ))}
-                            </Waveform>
                           ) : null}
                           <EdgeHandle
                             $side="left"

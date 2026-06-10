@@ -634,6 +634,97 @@ async function runFfmpegBuffer(args) {
   })
 }
 
+function roundFilterNumber(value, fallback = 0) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) {
+    return fallback
+  }
+
+  return Math.round(number * 1000) / 1000
+}
+
+function makeEvenDimension(value, fallback) {
+  const number = Math.trunc(Number(value) || fallback)
+  const safeNumber = Math.max(2, number)
+  return safeNumber % 2 === 0 ? safeNumber : safeNumber - 1
+}
+
+function clampNumber(value, min, max, fallback = min) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) {
+    return fallback
+  }
+
+  return Math.min(Math.max(number, min), max)
+}
+
+function getFilterColor(value, alpha = 1) {
+  const color = typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : '#ffffff'
+  return `0x${color.slice(1)}@${clampNumber(alpha, 0, 1, 1)}`
+}
+
+function escapeDrawText(value) {
+  return String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/:/g, '\\:')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .replace(/%/g, '\\%')
+    .replace(/\r?\n/g, '\\n')
+}
+
+function escapeFilterExpression(value) {
+  return String(value).replace(/,/g, '\\,')
+}
+
+async function probeMediaDetails(filePath) {
+  if (!filePath || !existsSync(filePath)) {
+    return { durationSec: null, hasAudio: false, hasVideo: false, height: 0, width: 0 }
+  }
+
+  let executablePath = ''
+  try {
+    executablePath = await resolveFfmpegExecutable()
+  } catch {
+    return { durationSec: null, hasAudio: false, hasVideo: false, height: 0, width: 0 }
+  }
+
+  return await new Promise((resolveCallback) => {
+    const child = spawn(executablePath, ['-i', filePath], {
+      stdio: ['ignore', 'ignore', 'pipe']
+    })
+
+    let stderr = ''
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString()
+    })
+
+    child.on('error', () => {
+      resolveCallback({ durationSec: null, hasAudio: false, hasVideo: false, height: 0, width: 0 })
+    })
+
+    child.on('close', () => {
+      const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
+      const videoLine = stderr
+        .split('\n')
+        .find((line) => /Video:/.test(line) && /,\s*\d+x\d+/.test(line))
+      const sizeMatch = videoLine?.match(/,\s*(\d+)x(\d+)[,\s]/)
+      const durationSec = durationMatch
+        ? Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3])
+        : null
+
+      resolveCallback({
+        durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null,
+        hasAudio: /Audio:/.test(stderr),
+        hasVideo: /Video:/.test(stderr),
+        height: sizeMatch ? Number(sizeMatch[2]) : 0,
+        width: sizeMatch ? Number(sizeMatch[1]) : 0
+      })
+    })
+  })
+}
+
 /** 使用 ffmpeg 从录屏里抽取时间线缩略图。 */
 export async function extractRecordingThumbnails({
   filePath,
@@ -681,7 +772,7 @@ export async function extractRecordingThumbnails({
   return thumbnails
 }
 
-/** 使用 ffmpeg 导出剪辑后的录屏视频。 */
+/** 使用 ffmpeg 按剪辑时间线导出录屏视频。 */
 export async function exportRecordingCut({ filePath, clips = [], output = {} }) {
   if (!isRecordingFilePath(filePath) || !existsSync(filePath)) {
     throw new Error('Invalid recording path.')
@@ -689,53 +780,254 @@ export async function exportRecordingCut({ filePath, clips = [], output = {} }) 
 
   const safeClips = (Array.isArray(clips) ? clips : [])
     .map((clip) => {
+      const kind = String(clip?.kind || 'video')
+      const sourcePath =
+        typeof clip?.sourcePath === 'string' && clip.sourcePath.trim()
+          ? resolve(clip.sourcePath)
+          : kind === 'video'
+            ? filePath
+            : ''
+      const startTime = Math.max(0, Number(clip?.startTime) || 0)
       const sourceStart = Math.max(0, Number(clip?.sourceStart) || 0)
       const duration = Math.max(0, Number(clip?.duration) || 0)
       return {
+        align: String(clip?.align || 'center'),
+        backgroundAlpha: clampNumber(clip?.backgroundAlpha, 0, 1, 0.58),
+        backgroundColor: clip?.backgroundColor,
+        color: clip?.color,
         duration,
+        fontFamily: String(clip?.fontFamily || ''),
+        fontSize: clampNumber(clip?.fontSize, 8, 160, 22),
+        fontWeight: String(clip?.fontWeight || '800'),
+        kind,
+        label: String(clip?.label || ''),
+        lineHeight: clampNumber(clip?.lineHeight, 0.8, 3, 1.2),
+        muted: Boolean(clip?.muted),
+        opacity: clampNumber(clip?.opacity, 0, 1, 1),
+        scale: clampNumber(clip?.scale, 1, 100, 28),
+        shadowBlur: clampNumber(clip?.shadowBlur, 0, 80, 8),
+        shadowColor: clip?.shadowColor,
+        shadowDistance: clampNumber(clip?.shadowDistance, 0, 80, 2),
+        sourcePath,
         sourceStart,
-        sourceEnd: sourceStart + duration
+        sourceEnd: sourceStart + duration,
+        startTime,
+        strokeColor: clip?.strokeColor,
+        strokeWidth: clampNumber(clip?.strokeWidth, 0, 40, 0),
+        transitionSeconds: clampNumber(clip?.transitionSeconds, 0, 5, 0),
+        transitionType: String(clip?.transitionType || 'none'),
+        volume: clampNumber(clip?.volume, 0, 2, 1),
+        x: clampNumber(clip?.x, 0, 100, 50),
+        y: clampNumber(clip?.y, 0, 100, kind === 'text' ? 84 : 50)
       }
     })
-    .filter((clip) => clip.duration >= 0.1)
-    .slice(0, 80)
+    .filter((clip) => clip.duration >= 0.1 && (clip.kind === 'text' || existsSync(clip.sourcePath)))
+    .slice(0, 160)
 
-  if (!safeClips.length) {
+  const videoClips = safeClips
+    .filter((clip) => clip.kind === 'video' && clip.sourcePath)
+    .sort((a, b) => a.startTime - b.startTime)
+  const audioClips = safeClips.filter((clip) => clip.kind === 'audio' && clip.sourcePath)
+  const imageClips = safeClips.filter((clip) => clip.kind === 'image' && clip.sourcePath)
+  const textClips = safeClips.filter((clip) => clip.kind === 'text' && clip.label.trim())
+  const timelineDuration = Math.max(
+    0.2,
+    Number(output?.duration) || 0,
+    ...safeClips.map((clip) => clip.startTime + clip.duration)
+  )
+
+  if (!videoClips.length) {
     throw new Error('No clips to export.')
   }
 
-  const width = Math.trunc(Number(output?.width) || 0)
-  const height = Math.trunc(Number(output?.height) || 0)
+  const primaryDetails = await probeMediaDetails(filePath)
+  const width = makeEvenDimension(output?.width, primaryDetails.width || 1280)
+  const height = makeEvenDimension(output?.height, primaryDetails.height || 720)
   const bitrate = Math.max(300_000, Math.min(30_000_000, Math.trunc(Number(output?.bitrate) || 0)))
   const fps = Math.max(1, Math.min(60, Math.trunc(Number(output?.fps) || 30)))
   const outputFilePath = join(getRecordingsDirectoryPath(), createRecordingCutFileName('webm'))
-  const trimFilters = []
-  const concatInputs = []
+  const inputSources = []
+  const inputSourceMap = new Map()
 
-  safeClips.forEach((clip, index) => {
-    trimFilters.push(
-      `[0:v]trim=start=${clip.sourceStart}:end=${clip.sourceEnd},setpts=PTS-STARTPTS[v${index}]`
+  function addInputSource(role, sourcePath) {
+    const key = `${role}:${sourcePath}`
+    const existing = inputSourceMap.get(key)
+    if (existing) {
+      return existing
+    }
+
+    const source = {
+      index: inputSources.length,
+      role,
+      sourcePath
+    }
+    inputSourceMap.set(key, source)
+    inputSources.push(source)
+    return source
+  }
+
+  for (const clip of videoClips) {
+    clip.inputSource = addInputSource('media', clip.sourcePath)
+  }
+  for (const clip of audioClips) {
+    clip.inputSource = addInputSource('media', clip.sourcePath)
+  }
+  for (const clip of imageClips) {
+    clip.inputSource = addInputSource('image', clip.sourcePath)
+  }
+
+  await Promise.all(
+    inputSources.map(async (source) => {
+      source.details =
+        source.role === 'image'
+          ? { durationSec: null, hasAudio: false, hasVideo: false, height: 0, width: 0 }
+          : await probeMediaDetails(source.sourcePath)
+    })
+  )
+
+  const inputArgs = inputSources.flatMap((source) =>
+    source.role === 'image'
+      ? ['-loop', '1', '-t', String(roundFilterNumber(timelineDuration)), '-i', source.sourcePath]
+      : ['-i', source.sourcePath]
+  )
+  const filters = [
+    `color=c=black:s=${width}x${height}:d=${roundFilterNumber(timelineDuration)}:r=${fps}[vbase0]`
+  ]
+  let videoChain = 'vbase0'
+  let videoChainIndex = 0
+
+  videoClips.forEach((clip, index) => {
+    const start = roundFilterNumber(clip.startTime)
+    const duration = roundFilterNumber(clip.duration)
+    const sourceStart = roundFilterNumber(clip.sourceStart)
+    const inputIndex = clip.inputSource.index
+    const clipLabel = `vclip${index}`
+    const nextChain = `vbase${index + 1}`
+    filters.push(
+      `[${inputIndex}:v]trim=start=${sourceStart}:duration=${duration},setpts=PTS-STARTPTS+${start}/TB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuva420p[${clipLabel}]`
     )
-    concatInputs.push(`[v${index}]`)
+    filters.push(
+      `[${videoChain}][${clipLabel}]overlay=x=0:y=0:eof_action=pass:repeatlast=0:shortest=0[${nextChain}]`
+    )
+    videoChain = nextChain
+    videoChainIndex = index + 1
   })
 
-  const scaleFilter =
-    width > 0 && height > 0
-      ? `,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`
-      : ''
-  const filterComplex = `${trimFilters.join(';')};${concatInputs.join('')}concat=n=${safeClips.length}:v=1:a=0,format=yuv420p,fps=${fps}${scaleFilter}[outv]`
+  imageClips.forEach((clip, index) => {
+    const start = roundFilterNumber(clip.startTime)
+    const duration = roundFilterNumber(clip.duration)
+    const transitionSeconds =
+      clip.transitionType === 'none' ? 0 : Math.min(clip.transitionSeconds, duration / 2)
+    const imageWidth = makeEvenDimension((width * clip.scale) / 100, Math.round(width * 0.28))
+    const clipLabel = `imgclip${index}`
+    const nextChain = `vimage${index + 1}`
+    const fadeFilters =
+      transitionSeconds > 0
+        ? `,fade=t=in:st=0:d=${roundFilterNumber(transitionSeconds)}:alpha=1,fade=t=out:st=${roundFilterNumber(
+            Math.max(0, duration - transitionSeconds)
+          )}:d=${roundFilterNumber(transitionSeconds)}:alpha=1`
+        : ''
+    filters.push(
+      `[${clip.inputSource.index}:v]trim=duration=${duration},setpts=PTS-STARTPTS,scale=${imageWidth}:-1,format=rgba,colorchannelmixer=aa=${clip.opacity}${fadeFilters},setpts=PTS-STARTPTS+${start}/TB[${clipLabel}]`
+    )
+    filters.push(
+      `[${videoChain}][${clipLabel}]overlay=x=main_w*${clip.x / 100}-overlay_w/2:y=main_h*${clip.y / 100}-overlay_h/2:eof_action=pass:repeatlast=0:shortest=0[${nextChain}]`
+    )
+    videoChain = nextChain
+    videoChainIndex += 1
+  })
+
+  textClips.forEach((clip, index) => {
+    const start = roundFilterNumber(clip.startTime)
+    const end = roundFilterNumber(clip.startTime + clip.duration)
+    const duration = roundFilterNumber(clip.duration)
+    const transitionSeconds =
+      clip.transitionType === 'none' ? 0 : Math.min(clip.transitionSeconds, duration / 2)
+    const alphaExpression =
+      transitionSeconds > 0
+        ? `:alpha='${escapeFilterExpression(
+            `if(lt(t,${roundFilterNumber(start + transitionSeconds)}),max(0,min(1,(t-${start})/${roundFilterNumber(
+              transitionSeconds
+            )})),if(gt(t,${roundFilterNumber(end - transitionSeconds)}),max(0,min(1,(${end}-t)/${roundFilterNumber(
+              transitionSeconds
+            )})),1))`
+          )}'`
+        : ''
+    const nextChain = `vtext${index + 1}`
+    const fontColor = getFilterColor(clip.color, clip.opacity)
+    const boxColor = getFilterColor(clip.backgroundColor || '#000000', clip.backgroundAlpha)
+    const strokeColor = getFilterColor(clip.strokeColor || '#000000', 1)
+    const shadowColor = getFilterColor(clip.shadowColor || '#000000', 1)
+    filters.push(
+      `[${videoChain}]drawtext=text='${escapeDrawText(clip.label)}':fontcolor=${fontColor}:fontsize=${Math.round(
+        clip.fontSize
+      )}:line_spacing=${Math.round(clip.fontSize * (clip.lineHeight - 1))}:x=w*${clip.x / 100}-text_w/2:y=h*${
+        clip.y / 100
+      }-text_h/2:box=1:boxcolor=${boxColor}:boxborderw=14:borderw=${roundFilterNumber(
+        clip.strokeWidth
+      )}:bordercolor=${strokeColor}:shadowcolor=${shadowColor}:shadowx=${roundFilterNumber(
+        clip.shadowDistance
+      )}:shadowy=${roundFilterNumber(clip.shadowDistance)}:enable='between(t\\,${start}\\,${end})'${alphaExpression}[${nextChain}]`
+    )
+    videoChain = nextChain
+    videoChainIndex += 1
+  })
+
+  const audioLabels = []
+  let audioIndex = 0
+  for (const clip of videoClips) {
+    if (clip.muted || !clip.inputSource.details?.hasAudio) {
+      continue
+    }
+
+    const label = `aclip${audioIndex}`
+    const delayMs = Math.round(clip.startTime * 1000)
+    filters.push(
+      `[${clip.inputSource.index}:a]atrim=start=${roundFilterNumber(clip.sourceStart)}:duration=${roundFilterNumber(
+        clip.duration
+      )},asetpts=PTS-STARTPTS,volume=${roundFilterNumber(clip.volume, 1)},adelay=${delayMs}:all=1[${label}]`
+    )
+    audioLabels.push(`[${label}]`)
+    audioIndex += 1
+  }
+  for (const clip of audioClips) {
+    if (clip.muted || !clip.inputSource.details?.hasAudio) {
+      continue
+    }
+
+    const label = `aclip${audioIndex}`
+    const delayMs = Math.round(clip.startTime * 1000)
+    filters.push(
+      `[${clip.inputSource.index}:a]atrim=start=${roundFilterNumber(clip.sourceStart)}:duration=${roundFilterNumber(
+        clip.duration
+      )},asetpts=PTS-STARTPTS,volume=${roundFilterNumber(clip.volume, 1)},adelay=${delayMs}:all=1[${label}]`
+    )
+    audioLabels.push(`[${label}]`)
+    audioIndex += 1
+  }
+
+  const outputVideoLabel = videoChainIndex > 0 ? videoChain : 'vbase0'
+  filters.push(`[${outputVideoLabel}]format=yuv420p,fps=${fps}[outv]`)
+  if (audioLabels.length) {
+    filters.push(
+      `${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:dropout_transition=0,atrim=duration=${roundFilterNumber(
+        timelineDuration
+      )},asetpts=PTS-STARTPTS[aout]`
+    )
+  }
+
+  const filterComplex = filters.join(';')
 
   await mkdir(dirname(outputFilePath), { recursive: true })
   await runFfmpeg([
     '-y',
     '-hide_banner',
-    '-i',
-    filePath,
+    ...inputArgs,
     '-filter_complex',
     filterComplex,
     '-map',
     '[outv]',
-    '-an',
+    ...(audioLabels.length ? ['-map', '[aout]'] : ['-an']),
     '-c:v',
     'libvpx-vp9',
     '-b:v',
@@ -746,6 +1038,9 @@ export async function exportRecordingCut({ filePath, clips = [], output = {} }) 
     'realtime',
     '-cpu-used',
     '4',
+    ...(audioLabels.length ? ['-c:a', 'libopus', '-b:a', '128k'] : []),
+    '-t',
+    String(roundFilterNumber(timelineDuration)),
     outputFilePath
   ])
 

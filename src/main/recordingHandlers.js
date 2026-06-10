@@ -336,8 +336,10 @@ export function registerRecordingHandlers() {
         output: payload?.output
       })
       const outputStat = await stat(outputPath)
+      const outputDurationSec =
+        Number(payload?.output?.duration || 0) > 0 ? Number(payload.output.duration) : null
       await writeRecordingMetadata(outputPath, {
-        durationSec: null,
+        durationSec: outputDurationSec,
         source: {
           type: 'editor-cut',
           path: filePath,

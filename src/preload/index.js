@@ -1,4 +1,5 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { pathToFileURL } from 'node:url'
 
 const api = {
   /** 响应功能：创建录屏会话并返回会话状态。 */
@@ -49,6 +50,10 @@ const api = {
     ipcRenderer.invoke('extractRecordingEditorThumbnails', payload),
   /** 响应功能：导出录屏剪辑结果。 */
   exportRecordingEditorCut: (payload) => ipcRenderer.invoke('exportRecordingEditorCut', payload),
+  /** 响应功能：读取用户选择文件的真实本地路径，供 ffmpeg 导出使用。 */
+  getPathForFile: (file) => webUtils.getPathForFile(file),
+  /** 响应功能：将本地路径转换为 renderer 可加载的 file URL。 */
+  toFileUrl: (filePath) => pathToFileURL(filePath).toString(),
   /** 响应功能：在系统文件管理器中定位录屏文件。 */
   revealScreenRecording: (payload) => ipcRenderer.invoke('revealScreenRecording', payload),
   /** 响应功能：删除录屏文件并同步清理关联会话。 */
