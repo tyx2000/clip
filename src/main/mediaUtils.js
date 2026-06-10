@@ -568,8 +568,20 @@ async function resolveFfmpegExecutable() {
   )
 }
 
+function parseFfmpegProgressSeconds(value) {
+  const matches = [...String(value || '').matchAll(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)]
+  const lastMatch = matches.at(-1)
+  if (!lastMatch) {
+    return null
+  }
+
+  const [, hoursRaw, minutesRaw, secondsRaw] = lastMatch
+  const seconds = Number(hoursRaw) * 3600 + Number(minutesRaw) * 60 + Number.parseFloat(secondsRaw)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null
+}
+
 /** 执行一次 ffmpeg 命令，并在失败时抛出带上下文的错误。 */
-export async function runFfmpeg(args) {
+export async function runFfmpeg(args, { durationSec = 0, onProgress } = {}) {
   const executablePath = await resolveFfmpegExecutable()
 
   await new Promise((resolveCallback, rejectCallback) => {
@@ -578,8 +590,29 @@ export async function runFfmpeg(args) {
     })
 
     let stderr = ''
+    let lastProgress = 0
+    const emitProgress = (seconds) => {
+      if (!(durationSec > 0) || typeof onProgress !== 'function') {
+        return
+      }
+
+      const progress = clampNumber(seconds / durationSec, 0, 0.99, 0)
+      if (progress <= lastProgress + 0.002) {
+        return
+      }
+
+      lastProgress = progress
+      onProgress(progress)
+    }
+
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString()
+      const text = chunk.toString()
+      stderr += text
+      const progressSeconds =
+        parseFfmpegProgressSeconds(text) || parseFfmpegProgressSeconds(stderr.slice(-2000))
+      if (progressSeconds !== null) {
+        emitProgress(progressSeconds)
+      }
     })
 
     child.on('error', (error) => {
@@ -588,6 +621,9 @@ export async function runFfmpeg(args) {
 
     child.on('close', (code) => {
       if (code === 0) {
+        if (typeof onProgress === 'function') {
+          onProgress(1)
+        }
         resolveCallback()
         return
       }
@@ -773,7 +809,7 @@ export async function extractRecordingThumbnails({
 }
 
 /** 使用 ffmpeg 按剪辑时间线导出录屏视频。 */
-export async function exportRecordingCut({ filePath, clips = [], output = {} }) {
+export async function exportRecordingCut({ filePath, clips = [], output = {}, onProgress }) {
   if (!isRecordingFilePath(filePath) || !existsSync(filePath)) {
     throw new Error('Invalid recording path.')
   }
@@ -824,11 +860,11 @@ export async function exportRecordingCut({ filePath, clips = [], output = {} }) 
     .filter((clip) => clip.duration >= 0.1 && (clip.kind === 'text' || existsSync(clip.sourcePath)))
     .slice(0, 160)
 
-  const videoClips = safeClips
+  const sourceVideoClips = safeClips
     .filter((clip) => clip.kind === 'video' && clip.sourcePath)
     .sort((a, b) => a.startTime - b.startTime)
-  const audioClips = safeClips.filter((clip) => clip.kind === 'audio' && clip.sourcePath)
-  const imageClips = safeClips.filter((clip) => clip.kind === 'image' && clip.sourcePath)
+  const sourceAudioClips = safeClips.filter((clip) => clip.kind === 'audio' && clip.sourcePath)
+  const sourceImageClips = safeClips.filter((clip) => clip.kind === 'image' && clip.sourcePath)
   const textClips = safeClips.filter((clip) => clip.kind === 'text' && clip.label.trim())
   const timelineDuration = Math.max(
     0.2,
@@ -836,7 +872,7 @@ export async function exportRecordingCut({ filePath, clips = [], output = {} }) 
     ...safeClips.map((clip) => clip.startTime + clip.duration)
   )
 
-  if (!videoClips.length) {
+  if (!sourceVideoClips.length) {
     throw new Error('No clips to export.')
   }
 
@@ -866,15 +902,18 @@ export async function exportRecordingCut({ filePath, clips = [], output = {} }) 
     return source
   }
 
-  for (const clip of videoClips) {
-    clip.inputSource = addInputSource('media', clip.sourcePath)
-  }
-  for (const clip of audioClips) {
-    clip.inputSource = addInputSource('media', clip.sourcePath)
-  }
-  for (const clip of imageClips) {
-    clip.inputSource = addInputSource('image', clip.sourcePath)
-  }
+  const videoClips = sourceVideoClips.map((clip) => ({
+    ...clip,
+    inputSource: addInputSource('media', clip.sourcePath)
+  }))
+  const audioClips = sourceAudioClips.map((clip) => ({
+    ...clip,
+    inputSource: addInputSource('media', clip.sourcePath)
+  }))
+  const imageClips = sourceImageClips.map((clip) => ({
+    ...clip,
+    inputSource: addInputSource('image', clip.sourcePath)
+  }))
 
   await Promise.all(
     inputSources.map(async (source) => {
@@ -1019,30 +1058,33 @@ export async function exportRecordingCut({ filePath, clips = [], output = {} }) 
   const filterComplex = filters.join(';')
 
   await mkdir(dirname(outputFilePath), { recursive: true })
-  await runFfmpeg([
-    '-y',
-    '-hide_banner',
-    ...inputArgs,
-    '-filter_complex',
-    filterComplex,
-    '-map',
-    '[outv]',
-    ...(audioLabels.length ? ['-map', '[aout]'] : ['-an']),
-    '-c:v',
-    'libvpx-vp9',
-    '-b:v',
-    bitrate ? String(bitrate) : '4M',
-    '-row-mt',
-    '1',
-    '-deadline',
-    'realtime',
-    '-cpu-used',
-    '4',
-    ...(audioLabels.length ? ['-c:a', 'libopus', '-b:a', '128k'] : []),
-    '-t',
-    String(roundFilterNumber(timelineDuration)),
-    outputFilePath
-  ])
+  await runFfmpeg(
+    [
+      '-y',
+      '-hide_banner',
+      ...inputArgs,
+      '-filter_complex',
+      filterComplex,
+      '-map',
+      '[outv]',
+      ...(audioLabels.length ? ['-map', '[aout]'] : ['-an']),
+      '-c:v',
+      'libvpx-vp9',
+      '-b:v',
+      bitrate ? String(bitrate) : '4M',
+      '-row-mt',
+      '1',
+      '-deadline',
+      'realtime',
+      '-cpu-used',
+      '4',
+      ...(audioLabels.length ? ['-c:a', 'libopus', '-b:a', '128k'] : []),
+      '-t',
+      String(roundFilterNumber(timelineDuration)),
+      outputFilePath
+    ],
+    { durationSec: timelineDuration, onProgress }
+  )
 
   return outputFilePath
 }

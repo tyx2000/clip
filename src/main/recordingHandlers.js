@@ -323,8 +323,9 @@ export function registerRecordingHandlers() {
   })
 
   /** 响应功能：导出剪辑后的录屏文件。 */
-  ipcMain.handle('exportRecordingEditorCut', async (_, payload = {}) => {
+  ipcMain.handle('exportRecordingEditorCut', async (event, payload = {}) => {
     const filePath = typeof payload?.path === 'string' ? payload.path : ''
+    const exportId = typeof payload?.exportId === 'string' ? payload.exportId : ''
     if (!isRecordingFilePath(filePath)) {
       return { ok: false, message: 'Invalid recording path.' }
     }
@@ -333,7 +334,14 @@ export function registerRecordingHandlers() {
       const outputPath = await exportRecordingCut({
         filePath,
         clips: payload?.clips,
-        output: payload?.output
+        output: payload?.output,
+        onProgress: (progress) => {
+          if (!exportId || event.sender.isDestroyed()) {
+            return
+          }
+
+          event.sender.send('recording-editor-export-progress', { exportId, progress })
+        }
       })
       const outputStat = await stat(outputPath)
       const outputDurationSec =

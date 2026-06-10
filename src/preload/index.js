@@ -50,6 +50,14 @@ const api = {
     ipcRenderer.invoke('extractRecordingEditorThumbnails', payload),
   /** 响应功能：导出录屏剪辑结果。 */
   exportRecordingEditorCut: (payload) => ipcRenderer.invoke('exportRecordingEditorCut', payload),
+  /** 响应功能：监听录屏剪辑导出进度。 */
+  onRecordingEditorExportProgress: (listener) => {
+    const wrappedListener = (_, payload) => listener(payload)
+    ipcRenderer.on('recording-editor-export-progress', wrappedListener)
+    return () => {
+      ipcRenderer.removeListener('recording-editor-export-progress', wrappedListener)
+    }
+  },
   /** 响应功能：读取用户选择文件的真实本地路径，供 ffmpeg 导出使用。 */
   getPathForFile: (file) => webUtils.getPathForFile(file),
   /** 响应功能：将本地路径转换为 renderer 可加载的 file URL。 */

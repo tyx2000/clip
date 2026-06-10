@@ -8,6 +8,9 @@ const TIMELINE_ZOOM_DEFAULT = 10
 const TIMELINE_ZOOM_MIN = 4
 const TIMELINE_ZOOM_MAX = 80
 const TRACK_GUTTER_WIDTH = 16
+const CLIP_SNAP_DISTANCE_PX = 8
+const TIMELINE_AUTO_SCROLL_EDGE_PX = 36
+const TIMELINE_AUTO_SCROLL_STEP_PX = 18
 const DEFAULT_EXPORT = {
   bitrate: 4_000_000,
   fps: 30,
@@ -53,9 +56,10 @@ const TOOLS = [
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 const Shell = styled.main`
+  --timeline-height: ${({ $timelineHeight }) => `${$timelineHeight}px`};
   height: 100%;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 7px ${({ $timelineHeight }) => `${$timelineHeight}px`};
+  grid-template-rows: minmax(0, 1fr) 7px var(--timeline-height);
   background: #111418;
   color: #f5f7fb;
 `
@@ -117,6 +121,12 @@ const IconButton = styled.button`
   }
 `
 
+const ExportButton = styled(IconButton)`
+  width: ${({ $exporting }) => ($exporting ? '46px' : '24px')};
+  min-width: ${({ $exporting }) => ($exporting ? '46px' : '24px')};
+  font-size: ${({ $exporting }) => ($exporting ? '11px' : '12px')};
+`
+
 const Workspace = styled.section`
   min-height: 0;
   display: grid;
@@ -163,12 +173,13 @@ const PreviewStage = styled.div`
 `
 
 const PreviewFrame = styled.div`
-  width: min(100%, calc((100vh - 16px - 16px - 38px - max(220px, 34vh)) * 16 / 9));
+  width: min(100%, calc((100vh - var(--timeline-height) - 77px) * 16 / 9));
   max-width: 100%;
+  max-height: 100%;
   aspect-ratio: 16 / 9;
   position: relative;
   border: 1px solid #343c49;
-  border-radius: 8px;
+  border-radius: 2px;
   background: #000000;
   overflow: hidden;
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.36);
@@ -180,12 +191,13 @@ const Video = styled.video`
   object-fit: contain;
   background: #000000;
   visibility: ${({ $visible }) => ($visible ? 'visible' : 'hidden')};
+  cursor: pointer;
 `
 
 const PreviewOverlayLayer = styled.div`
   position: absolute;
   inset: 0;
-  pointer-events: auto;
+  pointer-events: none;
 `
 
 const CenterGuide = styled.span`
@@ -538,14 +550,45 @@ const TrackLabel = styled.div`
 const Lane = styled.div`
   position: relative;
   min-height: 56px;
-  background: ${({ $kind }) =>
-    $kind === 'video'
-      ? '#121b25'
-      : $kind === 'audio'
-        ? '#111d19'
-        : $kind === 'text'
-          ? '#1a1825'
-          : '#1c1a12'};
+  background: ${({ $dropState }) =>
+      $dropState === 'valid'
+        ? 'linear-gradient(0deg, rgba(90, 167, 255, 0.16), rgba(90, 167, 255, 0.16)),'
+        : $dropState === 'invalid'
+          ? 'linear-gradient(0deg, rgba(255, 122, 122, 0.12), rgba(255, 122, 122, 0.12)),'
+          : ''}
+    ${({ $kind }) =>
+      $kind === 'video'
+        ? '#121b25'
+        : $kind === 'audio'
+          ? '#111d19'
+          : $kind === 'text'
+            ? '#1a1825'
+            : '#1c1a12'};
+  opacity: ${({ $dimmed }) => ($dimmed ? 0.48 : 1)};
+  outline: ${({ $dropState }) =>
+    $dropState === 'valid'
+      ? '1px solid rgba(90, 167, 255, 0.72)'
+      : $dropState === 'invalid'
+        ? '1px solid rgba(255, 122, 122, 0.58)'
+        : '0'};
+  outline-offset: -1px;
+  transition:
+    background 120ms ease,
+    opacity 120ms ease,
+    outline-color 120ms ease;
+`
+
+const ClipPlaceholder = styled.div`
+  position: absolute;
+  top: 8px;
+  left: ${({ $left }) => `${$left}px`};
+  width: ${({ $width }) => `${$width}px`};
+  min-width: 28px;
+  height: 40px;
+  border: 1px dashed rgba(245, 247, 251, 0.34);
+  border-radius: 2px;
+  background: rgba(245, 247, 251, 0.08);
+  pointer-events: none;
 `
 
 const Clip = styled.div`
@@ -555,8 +598,16 @@ const Clip = styled.div`
   width: ${({ $width }) => `${$width}px`};
   min-width: 28px;
   height: 40px;
-  border: 1px solid ${({ $selected }) => ($selected ? '#ffffff' : 'rgba(255, 255, 255, 0.22)')};
-  border-radius: 8px;
+  border: 1px solid
+    ${({ $dragging, $dropState, $selected }) =>
+      $dragging && $dropState === 'invalid'
+        ? '#ff7a7a'
+        : $dragging && $dropState === 'valid'
+          ? '#8ce2b5'
+          : $selected
+            ? '#ffffff'
+            : 'rgba(255, 255, 255, 0.22)'};
+  border-radius: 4px;
   background: ${({ $kind }) =>
     $kind === 'video'
       ? '#24598f'
@@ -565,10 +616,30 @@ const Clip = styled.div`
         : $kind === 'text'
           ? '#6f4db7'
           : '#8a6a24'};
-  box-shadow: ${({ $selected }) => ($selected ? '0 0 0 2px #4b9cff' : 'none')};
+  box-shadow: ${({ $dragging, $dropState, $selected }) =>
+    $dragging
+      ? $dropState === 'invalid'
+        ? '0 14px 34px rgba(0, 0, 0, 0.42), 0 0 0 2px rgba(255, 122, 122, 0.42)'
+        : '0 14px 34px rgba(0, 0, 0, 0.42), 0 0 0 2px rgba(140, 226, 181, 0.32)'
+      : $selected
+        ? '0 0 0 2px #4b9cff'
+        : 'none'};
   cursor: grab;
   overflow: hidden;
   user-select: none;
+  opacity: ${({ $dragging }) => ($dragging ? 0.94 : 1)};
+  transform: translate3d(
+      ${({ $dragDeltaX }) => `${$dragDeltaX || 0}px`},
+      ${({ $dragDeltaY }) => `${$dragDeltaY || 0}px`},
+      0
+    )
+    scale(${({ $dragging }) => ($dragging ? 1.02 : 1)});
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    opacity 120ms ease;
+  z-index: ${({ $dragging, $selected }) => ($dragging ? 30 : $selected ? 3 : 1)};
+  will-change: ${({ $dragging }) => ($dragging ? 'transform' : 'auto')};
 `
 
 const ClipThumbs = styled.div`
@@ -623,40 +694,30 @@ const ClipIcon = styled.span`
 
 const EdgeHandle = styled.span`
   position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 7px;
-  ${({ $side }) =>
-    $side === 'left'
-      ? 'left: 0; border-radius: 7px 2px 2px 7px;'
-      : 'right: 0; border-radius: 2px 7px 7px 2px;'}
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  ${({ $side }) => ($side === 'left' ? 'left: 0;' : 'right: 0;')}
   cursor: ew-resize;
-  background: rgba(245, 247, 251, 0.72);
-  border: 1px solid rgba(17, 20, 24, 0.48);
+  background: transparent;
+  border: 0;
   box-shadow: none;
   z-index: 2;
 
-  &::before,
-  &::after {
+  &::before {
     content: '';
     position: absolute;
-    top: 7px;
-    bottom: 7px;
-    width: 1px;
-    border-radius: 999px;
-    background: rgba(17, 20, 24, 0.62);
+    top: 15%;
+    bottom: 15%;
+    width: 3px;
+    ${({ $side }) => ($side === 'left' ? 'left: 1px;' : 'right: 1px;')}
+    border-radius: 2px;
+    background: #5aa7ff;
+    box-shadow: 0 0 0 1px rgba(17, 20, 24, 0.52);
   }
 
-  &::before {
-    left: 2px;
-  }
-
-  &::after {
-    right: 2px;
-  }
-
-  ${Clip}:hover & {
-    background: #ffffff;
+  ${Clip}:hover &::before {
+    background: #8fc4ff;
   }
 `
 
@@ -700,6 +761,21 @@ function cloneClips(clips) {
   return clips.map((clip) => ({ ...clip }))
 }
 
+function createHistorySnapshot(clips, selectedClipId = '') {
+  return {
+    clips: cloneClips(clips),
+    selectedClipId
+  }
+}
+
+function getHistorySnapshotClips(snapshot) {
+  return Array.isArray(snapshot) ? snapshot : snapshot?.clips || []
+}
+
+function getHistorySnapshotSelectedClipId(snapshot) {
+  return Array.isArray(snapshot) ? snapshot[0]?.id || '' : snapshot?.selectedClipId || ''
+}
+
 function formatEditorTime(value) {
   const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0
   const totalMilliseconds = Math.floor(safeValue * 1000)
@@ -733,6 +809,10 @@ function formatRulerTime(value) {
   }
 
   return `${String(minutes).padStart(2, '0')}:${secondText}`
+}
+
+function formatExportProgress(progress) {
+  return `${clamp(Math.round((Number(progress) || 0) * 100), 1, 100)}%`
 }
 
 function getTimelineEnd(clips, fallbackDuration) {
@@ -805,6 +885,77 @@ function hasTrackOverlap(clips, candidate, trackId = candidate.trackId) {
   )
 }
 
+function getSnappedMoveStartTime(clips, candidate, trackId, zoomValue) {
+  const snapThreshold = CLIP_SNAP_DISTANCE_PX / Math.max(1, zoomValue)
+  let snappedStartTime = candidate.startTime
+  let snapDistance = snapThreshold
+
+  const considerSnap = (nextStartTime) => {
+    if (nextStartTime < 0) {
+      return
+    }
+
+    const distance = Math.abs(candidate.startTime - nextStartTime)
+    if (distance <= snapDistance) {
+      snapDistance = distance
+      snappedStartTime = nextStartTime
+    }
+  }
+
+  for (const clip of clips) {
+    if (clip.id === candidate.id || clip.kind !== candidate.kind || clip.trackId !== trackId) {
+      continue
+    }
+
+    considerSnap(getClipEnd(clip))
+    considerSnap(Number(clip.startTime || 0) - Number(candidate.duration || 0))
+  }
+
+  return roundTime(snappedStartTime)
+}
+
+function getSameTrackNeighborClips(clips, drag) {
+  return clips.filter(
+    (clip) => clip.id !== drag.clipId && clip.kind === drag.kind && clip.trackId === drag.trackId
+  )
+}
+
+function getTrimLeftStartTime(clips, drag, deltaTime, zoomValue) {
+  const fixedEnd = drag.startTime + drag.duration
+  const maxStart = fixedEnd - MIN_CLIP_DURATION
+  const minStart = Math.min(
+    maxStart,
+    Math.max(
+      0,
+      ...getSameTrackNeighborClips(clips, drag)
+        .filter((clip) => Number(clip.startTime || 0) < fixedEnd)
+        .map((clip) => getClipEnd(clip))
+    )
+  )
+  const snapThreshold = CLIP_SNAP_DISTANCE_PX / Math.max(1, zoomValue)
+  const rawStart = drag.startTime + deltaTime
+  const snappedStart = Math.abs(rawStart - minStart) <= snapThreshold ? minStart : rawStart
+
+  return roundTime(clamp(snappedStart, minStart, maxStart))
+}
+
+function getTrimRightDuration(clips, drag, deltaTime, sourceLimit, zoomValue) {
+  const minEnd = drag.startTime + MIN_CLIP_DURATION
+  const sourceEnd = drag.startTime + sourceLimit
+  const nextClipStart = Math.min(
+    sourceEnd,
+    ...getSameTrackNeighborClips(clips, drag)
+      .map((clip) => Number(clip.startTime || 0))
+      .filter((startTime) => startTime > drag.startTime)
+  )
+  const maxEnd = Math.max(minEnd, nextClipStart)
+  const snapThreshold = CLIP_SNAP_DISTANCE_PX / Math.max(1, zoomValue)
+  const rawEnd = drag.startTime + drag.duration + deltaTime
+  const snappedEnd = Math.abs(rawEnd - maxEnd) <= snapThreshold ? maxEnd : rawEnd
+
+  return roundTime(clamp(snappedEnd, minEnd, maxEnd) - drag.startTime)
+}
+
 function getNextTrackId(clips, kind) {
   const maxIndex = Math.max(
     1,
@@ -825,14 +976,69 @@ function getAvailableTrackId(clips, kind, startTime, duration) {
   return availableTrack?.id || getNextTrackId(clips, kind)
 }
 
-function resolveDraggedClipTrackOverlap(clips, clipId) {
-  const draggedClip = clips.find((clip) => clip.id === clipId)
-  if (!draggedClip || !hasTrackOverlap(clips, draggedClip)) {
-    return clips
+function getTimelineTrackRects(trackViewport) {
+  return Array.from(trackViewport?.querySelectorAll('[data-track-id]') || []).map((element) => {
+    const rect = element.getBoundingClientRect()
+    return {
+      bottom: rect.bottom,
+      isPreview: element.dataset.trackPreview === 'true',
+      kind: element.dataset.trackKind,
+      top: rect.top,
+      trackId: element.dataset.trackId
+    }
+  })
+}
+
+function getTimelineTrackRectKey(trackViewport) {
+  return Array.from(trackViewport?.querySelectorAll('[data-track-id]') || [])
+    .map((element) => `${element.dataset.trackId}:${element.dataset.trackPreview || 'false'}`)
+    .join('|')
+}
+
+function getTrackAtClientY(trackRects, clientY) {
+  return trackRects.find((track) => clientY >= track.top && clientY <= track.bottom) || null
+}
+
+function getNewTrackTarget(trackRects, clips, kind, clientY) {
+  const sameKindTracks = trackRects.filter((track) => track.kind === kind && !track.isPreview)
+  const lastSameKindTrack = sameKindTracks.at(-1)
+  if (!lastSameKindTrack || clientY < lastSameKindTrack.bottom - 8) {
+    return null
   }
 
-  const nextTrackId = getNextTrackId(clips, draggedClip.kind)
-  return clips.map((clip) => (clip.id === clipId ? { ...clip, trackId: nextTrackId } : clip))
+  return {
+    bottom: lastSameKindTrack.bottom + (lastSameKindTrack.bottom - lastSameKindTrack.top),
+    isNew: true,
+    kind,
+    top: lastSameKindTrack.bottom,
+    trackId: getNextTrackId(clips, kind)
+  }
+}
+
+function getMoveDragCandidate(drag, event, zoomValue, clips = []) {
+  const hoveredTrack = getTrackAtClientY(drag.trackRects, event.clientY)
+  const targetTrack =
+    hoveredTrack?.kind === drag.kind && !hoveredTrack.isPreview
+      ? hoveredTrack
+      : getNewTrackTarget(drag.trackRects, clips, drag.kind, event.clientY) || hoveredTrack
+  const targetTrackId = targetTrack?.trackId || drag.trackId
+  const rawStartTime = roundTime(
+    Math.max(0, drag.startTime + (event.clientX - drag.clientX) / zoomValue)
+  )
+  const candidate = {
+    ...drag.clip,
+    startTime: rawStartTime,
+    trackId: targetTrackId
+  }
+
+  if (targetTrack?.kind === drag.kind && targetTrackId) {
+    candidate.startTime = getSnappedMoveStartTime(clips, candidate, targetTrackId, zoomValue)
+  }
+
+  return {
+    candidate,
+    targetTrack
+  }
 }
 
 function getClipEnd(clip) {
@@ -1240,6 +1446,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const activeVideoClipIdRef = useRef('')
   const previewVideoVisibleRef = useRef(true)
   const timelinePlaybackRef = useRef({ startedAt: 0, startTime: 0 })
+  const exportIdRef = useRef('')
   const overlayDragRef = useRef(null)
   const mediaMetadataInitializedRef = useRef(false)
   const projectRestoredRef = useRef(false)
@@ -1250,6 +1457,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const timelineDurationRef = useRef(1)
   const zoomRef = useRef(TIMELINE_ZOOM_DEFAULT)
   const clipsRef = useRef([])
+  const selectedClipIdRef = useRef('')
   const videoClipsRef = useRef([])
   const [activeTool, setActiveTool] = useState('select')
   const [duration, setDuration] = useState(0)
@@ -1266,6 +1474,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const [thumbStatus, setThumbStatus] = useState('idle')
   const [exportSettings, setExportSettings] = useState(DEFAULT_EXPORT)
   const [exportStatus, setExportStatus] = useState('')
+  const [exportProgress, setExportProgress] = useState(0)
   const [isExporting, setIsExporting] = useState(false)
   const [playbackStatus, setPlaybackStatus] = useState('')
   const [mediaUrl, setMediaUrl] = useState(fileUrl || videoUrl)
@@ -1273,6 +1482,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const [isPreviewVideoVisible, setIsPreviewVideoVisible] = useState(true)
   const [visiblePreviewClips, setVisiblePreviewClips] = useState([])
   const [centerGuides, setCenterGuides] = useState({ x: false, y: false })
+  const [timelineDragPreview, setTimelineDragPreview] = useState(null)
   const [timelineHeight, setTimelineHeight] = useState(() =>
     typeof window === 'undefined' ? 260 : Math.max(220, Math.round(window.innerHeight * 0.34))
   )
@@ -1302,24 +1512,47 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     [clips]
   )
   const timelineTracks = useMemo(() => getTimelineTracks(clips), [clips])
+  const draggedTimelineClip = useMemo(
+    () =>
+      timelineDragPreview ? clips.find((clip) => clip.id === timelineDragPreview.clipId) : null,
+    [clips, timelineDragPreview]
+  )
+  const clipsByTrackId = useMemo(() => {
+    const nextClipsByTrackId = new Map()
+    for (const clip of clips) {
+      const trackClips = nextClipsByTrackId.get(clip.trackId) || []
+      trackClips.push(clip)
+      nextClipsByTrackId.set(clip.trackId, trackClips)
+    }
+    return nextClipsByTrackId
+  }, [clips])
+  const clipThumbnailsById = useMemo(() => {
+    const nextClipThumbnailsById = new Map()
+    for (const clip of clips) {
+      nextClipThumbnailsById.set(clip.id, getClipThumbnails(clip, thumbnails))
+    }
+    return nextClipThumbnailsById
+  }, [clips, thumbnails])
 
-  function pushHistory(nextClips = clips) {
-    setHistory((previous) => [...previous.slice(-HISTORY_LIMIT + 1), cloneClips(nextClips)])
+  function pushHistory(
+    nextClips = clipsRef.current,
+    nextSelectedClipId = selectedClipIdRef.current
+  ) {
+    setHistory((previous) => [
+      ...previous.slice(-HISTORY_LIMIT + 1),
+      createHistorySnapshot(nextClips, nextSelectedClipId)
+    ])
     setRedoStack([])
   }
 
   function applyClips(updater, { record = true } = {}) {
-    setClips((previous) => {
-      const next = typeof updater === 'function' ? updater(previous) : updater
-      if (record) {
-        setHistory((historyValue) => [
-          ...historyValue.slice(-HISTORY_LIMIT + 1),
-          cloneClips(previous)
-        ])
-        setRedoStack([])
-      }
-      return next
-    })
+    const previous = clipsRef.current
+    const next = typeof updater === 'function' ? updater(previous) : updater
+    if (record) {
+      pushHistory(previous)
+    }
+    clipsRef.current = next
+    setClips(next)
   }
 
   const ensureVideoClip = useEffectEvent((nextDuration, { resetTime = false } = {}) => {
@@ -1607,6 +1840,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     timelineDurationRef.current = timelineDuration
     zoomRef.current = zoom
     clipsRef.current = clips
+    selectedClipIdRef.current = selectedClipId
     videoClipsRef.current = videoClips
     syncTimelineChrome(currentTimeRef.current, { playing: isTimelinePlayingRef.current })
   })
@@ -1623,6 +1857,35 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
         URL.revokeObjectURL(objectVideoUrlRef.current)
         objectVideoUrlRef.current = ''
       }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window.api?.onRecordingEditorExportProgress !== 'function') {
+      return undefined
+    }
+
+    return window.api.onRecordingEditorExportProgress((payload = {}) => {
+      if (!payload?.exportId || payload.exportId !== exportIdRef.current) {
+        return
+      }
+
+      setExportProgress(clamp(Number(payload.progress) || 0, 0, 1))
+    })
+  }, [])
+
+  useEffect(() => {
+    const clampTimelineHeight = () => {
+      setTimelineHeight((height) =>
+        clamp(height, 180, Math.max(180, Math.round(window.innerHeight * 0.6)))
+      )
+    }
+
+    window.addEventListener('resize', clampTimelineHeight)
+    clampTimelineHeight()
+
+    return () => {
+      window.removeEventListener('resize', clampTimelineHeight)
     }
   }, [])
 
@@ -1803,6 +2066,126 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [volume])
 
+  function refreshTimelineTrackRects(drag, { force = false } = {}) {
+    const viewport = trackViewportRef.current
+    if (!viewport) {
+      drag.trackRects = []
+      drag.trackRectKey = ''
+      drag.trackRectsScrollTop = 0
+      return
+    }
+
+    const trackRectKey = getTimelineTrackRectKey(viewport)
+    const scrollTop = viewport.scrollTop
+    if (!force && drag.trackRectKey === trackRectKey && drag.trackRectsScrollTop === scrollTop) {
+      return
+    }
+
+    drag.trackRects = getTimelineTrackRects(viewport)
+    drag.trackRectKey = trackRectKey
+    drag.trackRectsScrollTop = scrollTop
+  }
+
+  function getTimelineMoveDropState(drag, event) {
+    refreshTimelineTrackRects(drag)
+    const { candidate, targetTrack } = getMoveDragCandidate(
+      drag,
+      event,
+      zoomRef.current,
+      clipsRef.current
+    )
+    const isValid =
+      targetTrack?.kind === drag.kind &&
+      targetTrack.trackId &&
+      !hasTrackOverlap(clipsRef.current, candidate, targetTrack.trackId)
+
+    return {
+      candidate,
+      dropState: isValid ? 'valid' : 'invalid',
+      targetTrack
+    }
+  }
+
+  function scrollTimelineWhileDragging(event) {
+    const viewport = trackViewportRef.current
+    if (!viewport) {
+      return false
+    }
+
+    const rect = viewport.getBoundingClientRect()
+    if (event.clientY > rect.bottom - TIMELINE_AUTO_SCROLL_EDGE_PX) {
+      viewport.scrollTop += TIMELINE_AUTO_SCROLL_STEP_PX
+      return true
+    } else if (event.clientY < rect.top + TIMELINE_AUTO_SCROLL_EDGE_PX) {
+      viewport.scrollTop -= TIMELINE_AUTO_SCROLL_STEP_PX
+      return true
+    }
+
+    return false
+  }
+
+  function updateTimelineMovePreview(drag, event) {
+    const didScroll = scrollTimelineWhileDragging(event)
+    if (didScroll) {
+      refreshTimelineTrackRects(drag)
+    }
+    const { candidate, dropState, targetTrack } = getTimelineMoveDropState(drag, event)
+    const deltaX = candidate.startTime * zoomRef.current - drag.startTime * zoomRef.current
+    const scrollDeltaY = (trackViewportRef.current?.scrollTop || 0) - drag.scrollTop
+    const deltaY = targetTrack
+      ? targetTrack.top - drag.trackTop + scrollDeltaY
+      : event.clientY - drag.clientY + scrollDeltaY
+
+    setTimelineDragPreview((previous) => {
+      const nextPreview = {
+        clipId: drag.clipId,
+        deltaX,
+        deltaY,
+        dropState,
+        isNewTrack: Boolean(targetTrack?.isNew),
+        newTrackKind: targetTrack?.isNew ? targetTrack.kind : '',
+        targetTrackId: targetTrack?.trackId || ''
+      }
+
+      if (
+        previous?.clipId === nextPreview.clipId &&
+        previous.deltaX === nextPreview.deltaX &&
+        previous.deltaY === nextPreview.deltaY &&
+        previous.dropState === nextPreview.dropState &&
+        previous.isNewTrack === nextPreview.isNewTrack &&
+        previous.newTrackKind === nextPreview.newTrackKind &&
+        previous.targetTrackId === nextPreview.targetTrackId
+      ) {
+        return previous
+      }
+
+      return nextPreview
+    })
+  }
+
+  function completeTimelineMove(drag, event) {
+    const { candidate, dropState, targetTrack } = getTimelineMoveDropState(drag, event)
+    if (dropState !== 'valid' || !targetTrack?.trackId) {
+      return
+    }
+
+    const changed =
+      roundTime(candidate.startTime) !== roundTime(drag.startTime) ||
+      targetTrack.trackId !== drag.trackId
+
+    if (!changed) {
+      return
+    }
+
+    applyClips((previous) =>
+      previous.map((clip) =>
+        clip.id === drag.clipId
+          ? { ...clip, startTime: candidate.startTime, trackId: targetTrack.trackId }
+          : clip
+      )
+    )
+  }
+
   useEffect(() => {
     if (
       !sourcePath ||
@@ -1851,134 +2234,171 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     }
   }, [duration, mediaUrl, sourcePath])
 
+  function moveDividerDrag(event, dividerDrag) {
+    const deltaY = event.clientY - dividerDrag.clientY
+    const maxHeight = Math.max(180, Math.round(window.innerHeight * 0.6))
+    setTimelineHeight(clamp(dividerDrag.height - deltaY, 180, maxHeight))
+  }
+
+  function moveOverlayResizeDrag(event, overlayDrag) {
+    const pointerXPercent = ((event.clientX - overlayDrag.left) / overlayDrag.width) * 100
+    const pointerYPercent = ((event.clientY - overlayDrag.top) / overlayDrag.height) * 100
+    const widthFromX = Math.abs(pointerXPercent - overlayDrag.x) * 2
+    const heightFromY = Math.abs(pointerYPercent - overlayDrag.y) * 2
+    const widthFromY =
+      heightFromY * (overlayDrag.height / overlayDrag.width) * overlayDrag.aspectRatio
+    const heightLimitPercent = Math.min(overlayDrag.y, 100 - overlayDrag.y) * 2
+    const widthLimitFromHeight =
+      heightLimitPercent * (overlayDrag.height / overlayDrag.width) * overlayDrag.aspectRatio
+    const widthLimitFromWidth = Math.min(overlayDrag.x, 100 - overlayDrag.x) * 2
+    const nextScale = clamp(
+      Math.max(widthFromX, widthFromY),
+      8,
+      Math.max(8, Math.min(80, widthLimitFromWidth, widthLimitFromHeight))
+    )
+    const roundedScale = roundTime(nextScale)
+    if (roundedScale !== overlayDrag.originalScale) {
+      overlayDrag.changed = true
+    }
+    setClips((previous) =>
+      previous.map((clip) =>
+        clip.id === overlayDrag.clipId ? { ...clip, scale: roundedScale } : clip
+      )
+    )
+  }
+
+  function moveOverlayPositionDrag(event, overlayDrag) {
+    const rawPosition = clampOverlayPosition(
+      overlayDrag.x + ((event.clientX - overlayDrag.clientX) / overlayDrag.width) * 100,
+      overlayDrag.y + ((event.clientY - overlayDrag.clientY) / overlayDrag.height) * 100,
+      overlayDrag.bounds
+    )
+    const { guides, position: nextPosition } = snapOverlayToCenter(rawPosition)
+    const roundedX = roundTime(nextPosition.x)
+    const roundedY = roundTime(nextPosition.y)
+    if (roundedX !== overlayDrag.originalX || roundedY !== overlayDrag.originalY) {
+      overlayDrag.changed = true
+    }
+    setCenterGuides((previous) =>
+      previous.x === guides.x && previous.y === guides.y ? previous : guides
+    )
+    setClips((previous) =>
+      previous.map((clip) =>
+        clip.id === overlayDrag.clipId ? { ...clip, x: roundedX, y: roundedY } : clip
+      )
+    )
+  }
+
+  function moveOverlayDrag(event, overlayDrag) {
+    if (overlayDrag.mode === 'resize') {
+      moveOverlayResizeDrag(event, overlayDrag)
+      return
+    }
+
+    moveOverlayPositionDrag(event, overlayDrag)
+  }
+
+  function moveScrubDrag(event, scrubDrag) {
+    const nextTime = (event.clientX - scrubDrag.left) / zoom
+    applySeek(nextTime, {
+      onTimeChange: syncTimelineUi,
+      setCurrentTime,
+      timelineDuration
+    })
+  }
+
+  function moveTimelineClipDrag(event, drag) {
+    if (drag.mode === 'move') {
+      updateTimelineMovePreview(drag, event)
+      return
+    }
+
+    const deltaTime = (event.clientX - drag.clientX) / zoom
+    setClips((previous) =>
+      previous.map((clip) => {
+        if (clip.id !== drag.clipId) {
+          return clip
+        }
+
+        if (drag.mode === 'trim-left') {
+          const nextStart = getTrimLeftStartTime(previous, drag, deltaTime, zoom)
+          const trimDelta = nextStart - drag.startTime
+          return {
+            ...clip,
+            duration: roundTime(Math.max(MIN_CLIP_DURATION, drag.duration - trimDelta)),
+            sourceStart:
+              drag.kind === 'video' || drag.kind === 'audio'
+                ? roundTime(Math.max(0, drag.sourceStart + trimDelta))
+                : drag.sourceStart,
+            startTime: roundTime(nextStart)
+          }
+        }
+
+        const sourceLimit =
+          drag.kind === 'video'
+            ? Math.max(MIN_CLIP_DURATION, duration - drag.sourceStart)
+            : drag.kind === 'audio'
+              ? Math.max(MIN_CLIP_DURATION, drag.sourceDuration - drag.sourceStart)
+              : Math.max(MIN_CLIP_DURATION, timelineDuration + 60)
+        const nextDuration = getTrimRightDuration(previous, drag, deltaTime, sourceLimit, zoom)
+        return {
+          ...clip,
+          duration: roundTime(nextDuration)
+        }
+      })
+    )
+  }
+
+  function completePointerDrag(event) {
+    const completedDrag = dragRef.current
+    const completedOverlayDrag = overlayDragRef.current
+    if (scrubDragRef.current && wasPlayingBeforeScrubRef.current) {
+      startTimelinePlayback(currentTimeRef.current)
+    }
+    if (completedDrag) {
+      if (completedDrag.mode === 'move') {
+        completeTimelineMove(completedDrag, event)
+      }
+      setTimelineDragPreview(null)
+    }
+    if (completedOverlayDrag?.changed && event.type !== 'pointercancel') {
+      pushHistory(completedOverlayDrag.historyClips, completedOverlayDrag.historySelectedClipId)
+    }
+    dragRef.current = null
+    dividerDragRef.current = null
+    overlayDragRef.current = null
+    setCenterGuides({ x: false, y: false })
+    scrubDragRef.current = null
+    wasPlayingBeforeScrubRef.current = false
+  }
+
   useEffect(() => {
     const handleMove = (event) => {
       const dividerDrag = dividerDragRef.current
       if (dividerDrag) {
-        const deltaY = event.clientY - dividerDrag.clientY
-        const maxHeight = Math.max(220, window.innerHeight - 180)
-        setTimelineHeight(clamp(dividerDrag.height - deltaY, 180, maxHeight))
+        moveDividerDrag(event, dividerDrag)
         return
       }
 
       const overlayDrag = overlayDragRef.current
       if (overlayDrag) {
-        if (overlayDrag.mode === 'resize') {
-          const pointerXPercent = ((event.clientX - overlayDrag.left) / overlayDrag.width) * 100
-          const pointerYPercent = ((event.clientY - overlayDrag.top) / overlayDrag.height) * 100
-          const widthFromX = Math.abs(pointerXPercent - overlayDrag.x) * 2
-          const heightFromY = Math.abs(pointerYPercent - overlayDrag.y) * 2
-          const widthFromY =
-            heightFromY * (overlayDrag.height / overlayDrag.width) * overlayDrag.aspectRatio
-          const heightLimitPercent = Math.min(overlayDrag.y, 100 - overlayDrag.y) * 2
-          const widthLimitFromHeight =
-            heightLimitPercent * (overlayDrag.height / overlayDrag.width) * overlayDrag.aspectRatio
-          const widthLimitFromWidth = Math.min(overlayDrag.x, 100 - overlayDrag.x) * 2
-          const nextScale = clamp(
-            Math.max(widthFromX, widthFromY),
-            8,
-            Math.max(8, Math.min(80, widthLimitFromWidth, widthLimitFromHeight))
-          )
-          setClips((previous) =>
-            previous.map((clip) =>
-              clip.id === overlayDrag.clipId ? { ...clip, scale: roundTime(nextScale) } : clip
-            )
-          )
-          return
-        }
-
-        const rawPosition = clampOverlayPosition(
-          overlayDrag.x + ((event.clientX - overlayDrag.clientX) / overlayDrag.width) * 100,
-          overlayDrag.y + ((event.clientY - overlayDrag.clientY) / overlayDrag.height) * 100,
-          overlayDrag.bounds
-        )
-        const { guides, position: nextPosition } = snapOverlayToCenter(rawPosition)
-        setCenterGuides((previous) =>
-          previous.x === guides.x && previous.y === guides.y ? previous : guides
-        )
-        setClips((previous) =>
-          previous.map((clip) =>
-            clip.id === overlayDrag.clipId
-              ? { ...clip, x: roundTime(nextPosition.x), y: roundTime(nextPosition.y) }
-              : clip
-          )
-        )
+        moveOverlayDrag(event, overlayDrag)
         return
       }
 
       const scrubDrag = scrubDragRef.current
       if (scrubDrag) {
-        const nextTime = (event.clientX - scrubDrag.left) / zoom
-        applySeek(nextTime, {
-          onTimeChange: syncTimelineUi,
-          setCurrentTime,
-          timelineDuration
-        })
+        moveScrubDrag(event, scrubDrag)
         return
       }
 
       const drag = dragRef.current
-      if (!drag) {
-        return
+      if (drag) {
+        moveTimelineClipDrag(event, drag)
       }
-
-      const deltaTime = (event.clientX - drag.clientX) / zoom
-      setClips((previous) =>
-        previous.map((clip) => {
-          if (clip.id !== drag.clipId) {
-            return clip
-          }
-
-          if (drag.mode === 'move') {
-            return {
-              ...clip,
-              startTime: roundTime(Math.max(0, drag.startTime + deltaTime))
-            }
-          }
-
-          if (drag.mode === 'trim-left') {
-            const maxStart = drag.startTime + drag.duration - MIN_CLIP_DURATION
-            const nextStart = clamp(drag.startTime + deltaTime, 0, maxStart)
-            const trimDelta = nextStart - drag.startTime
-            return {
-              ...clip,
-              duration: roundTime(Math.max(MIN_CLIP_DURATION, drag.duration - trimDelta)),
-              sourceStart:
-                drag.kind === 'video' || drag.kind === 'audio'
-                  ? roundTime(Math.max(0, drag.sourceStart + trimDelta))
-                  : drag.sourceStart,
-              startTime: roundTime(nextStart)
-            }
-          }
-
-          const sourceLimit =
-            drag.kind === 'video'
-              ? Math.max(MIN_CLIP_DURATION, duration - drag.sourceStart)
-              : drag.kind === 'audio'
-                ? Math.max(MIN_CLIP_DURATION, drag.sourceDuration - drag.sourceStart)
-                : Math.max(MIN_CLIP_DURATION, timelineDuration + 60)
-          const nextDuration = clamp(drag.duration + deltaTime, MIN_CLIP_DURATION, sourceLimit)
-          return {
-            ...clip,
-            duration: roundTime(nextDuration)
-          }
-        })
-      )
     }
-    const handleEnd = () => {
-      const completedDrag = dragRef.current
-      if (scrubDragRef.current && wasPlayingBeforeScrubRef.current) {
-        startTimelinePlayback(currentTimeRef.current)
-      }
-      if (completedDrag) {
-        setClips((previous) => resolveDraggedClipTrackOverlap(previous, completedDrag.clipId))
-      }
-      dragRef.current = null
-      dividerDragRef.current = null
-      overlayDragRef.current = null
-      setCenterGuides({ x: false, y: false })
-      scrubDragRef.current = null
-      wasPlayingBeforeScrubRef.current = false
+    const handleEnd = (event) => {
+      completePointerDrag(event)
     }
 
     window.addEventListener('pointermove', handleMove)
@@ -2002,6 +2422,55 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     })
   }
 
+  function revealTimelineClip(clipId) {
+    window.requestAnimationFrame(() => {
+      const viewport = trackViewportRef.current
+      const clipElement = viewport?.querySelector(`[data-clip-id="${clipId}"]`)
+      if (!viewport || !clipElement) {
+        return
+      }
+
+      const viewportRect = viewport.getBoundingClientRect()
+      const clipRect = clipElement.getBoundingClientRect()
+      const nextScrollLeft =
+        clipRect.left < viewportRect.left + 48
+          ? viewport.scrollLeft - (viewportRect.left + 48 - clipRect.left)
+          : clipRect.right > viewportRect.right - 48
+            ? viewport.scrollLeft + (clipRect.right - (viewportRect.right - 48))
+            : viewport.scrollLeft
+      const nextScrollTop =
+        clipRect.top < viewportRect.top + 12
+          ? viewport.scrollTop - (viewportRect.top + 12 - clipRect.top)
+          : clipRect.bottom > viewportRect.bottom - 12
+            ? viewport.scrollTop + (clipRect.bottom - (viewportRect.bottom - 12))
+            : viewport.scrollTop
+
+      viewport.scrollTo({
+        left: Math.max(0, nextScrollLeft),
+        top: Math.max(0, nextScrollTop),
+        behavior: 'smooth'
+      })
+    })
+  }
+
+  function selectClipAndReveal(clipId) {
+    if (!clipId) {
+      return
+    }
+
+    setSelectedClipId(clipId)
+    revealTimelineClip(clipId)
+  }
+
+  function selectActiveVideoClipFromPreview(event) {
+    event.preventDefault()
+    event.stopPropagation()
+    const activeVideoClip = findVideoClipAtTime(videoClipsRef.current, currentTimeRef.current)
+    if (activeVideoClip) {
+      selectClipAndReveal(activeVideoClip.id)
+    }
+  }
+
   function togglePlayback() {
     if (isPlaying) {
       pauseTimelinePlayback()
@@ -2015,16 +2484,40 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     event.preventDefault()
     event.stopPropagation()
     setSelectedClipId(clip.id)
-    pushHistory(clips)
-    dragRef.current = {
+    if (mode !== 'move') {
+      pushHistory(clips)
+    }
+    const dragState = {
       clientX: event.clientX,
+      clientY: event.clientY,
+      clip: { ...clip },
       clipId: clip.id,
       duration: clip.duration,
       kind: clip.kind,
       mode,
+      scrollTop: trackViewportRef.current?.scrollTop || 0,
       sourceStart: clip.sourceStart || 0,
       sourceDuration: clip.sourceDuration || clip.duration,
-      startTime: clip.startTime
+      startTime: clip.startTime,
+      trackTop: event.currentTarget.parentElement.getBoundingClientRect().top,
+      trackId: clip.trackId,
+      trackRectKey: '',
+      trackRects: [],
+      trackRectsScrollTop: 0
+    }
+    refreshTimelineTrackRects(dragState, { force: true })
+    dragRef.current = dragState
+
+    if (mode === 'move') {
+      setTimelineDragPreview({
+        clipId: clip.id,
+        deltaX: 0,
+        deltaY: 0,
+        dropState: 'valid',
+        isNewTrack: false,
+        newTrackKind: '',
+        targetTrackId: clip.trackId
+      })
     }
   }
 
@@ -2034,15 +2527,19 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     const rect = event.currentTarget.parentElement.getBoundingClientRect()
     const bounds = getOverlayBoundsFromElement(event.currentTarget)
     const position = clampOverlayPosition(Number(clip.x ?? 50), Number(clip.y ?? 50), bounds)
-    setSelectedClipId(clip.id)
-    pushHistory(clips)
+    selectClipAndReveal(clip.id)
     overlayDragRef.current = {
       bounds,
+      changed: false,
       clientX: event.clientX,
       clientY: event.clientY,
       clipId: clip.id,
       height: Math.max(1, rect.height),
+      historyClips: cloneClips(clipsRef.current),
+      historySelectedClipId: selectedClipIdRef.current,
       mode: 'move',
+      originalX: roundTime(position.x),
+      originalY: roundTime(position.y),
       width: Math.max(1, rect.width),
       x: position.x,
       y: position.y
@@ -2056,14 +2553,17 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     const layer = element.parentElement
     const elementRect = element.getBoundingClientRect()
     const layerRect = layer.getBoundingClientRect()
-    setSelectedClipId(clip.id)
-    pushHistory(clips)
+    selectClipAndReveal(clip.id)
     overlayDragRef.current = {
       aspectRatio: elementRect.width / Math.max(1, elementRect.height),
+      changed: false,
       clipId: clip.id,
       height: Math.max(1, layerRect.height),
+      historyClips: cloneClips(clipsRef.current),
+      historySelectedClipId: selectedClipIdRef.current,
       left: layerRect.left,
       mode: 'resize',
+      originalScale: roundTime(Number(clip.scale ?? 28)),
       top: layerRect.top,
       width: Math.max(1, layerRect.width),
       x: Number(clip.x ?? 50),
@@ -2380,11 +2880,18 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       return
     }
 
-    const previous = history[history.length - 1]
-    setRedoStack((stack) => [cloneClips(clips), ...stack])
+    const previousSnapshot = history[history.length - 1]
+    const previousClips = cloneClips(getHistorySnapshotClips(previousSnapshot))
+    const previousSelectedClipId = getHistorySnapshotSelectedClipId(previousSnapshot)
+    setRedoStack((stack) => [
+      createHistorySnapshot(clipsRef.current, selectedClipIdRef.current),
+      ...stack
+    ])
     setHistory((stack) => stack.slice(0, -1))
-    setClips(cloneClips(previous))
-    setSelectedClipId(previous[0]?.id || '')
+    clipsRef.current = previousClips
+    selectedClipIdRef.current = previousSelectedClipId
+    setClips(previousClips)
+    setSelectedClipId(previousSelectedClipId)
   }
 
   function redo() {
@@ -2392,11 +2899,18 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       return
     }
 
-    const next = redoStack[0]
-    setHistory((stack) => [...stack, cloneClips(clips)])
+    const nextSnapshot = redoStack[0]
+    const nextClips = cloneClips(getHistorySnapshotClips(nextSnapshot))
+    const nextSelectedClipId = getHistorySnapshotSelectedClipId(nextSnapshot)
+    setHistory((stack) => [
+      ...stack.slice(-HISTORY_LIMIT + 1),
+      createHistorySnapshot(clipsRef.current, selectedClipIdRef.current)
+    ])
     setRedoStack((stack) => stack.slice(1))
-    setClips(cloneClips(next))
-    setSelectedClipId(next[0]?.id || '')
+    clipsRef.current = nextClips
+    selectedClipIdRef.current = nextSelectedClipId
+    setClips(nextClips)
+    setSelectedClipId(nextSelectedClipId)
   }
 
   function updateSelectedClip(patch) {
@@ -2424,10 +2938,14 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
       return
     }
 
+    const exportId = createId('export')
+    exportIdRef.current = exportId
     setIsExporting(true)
-    setExportStatus('导出中...')
+    setExportProgress(0.01)
+    setExportStatus('导出进度 1%')
     try {
       const result = await window.api.exportRecordingEditorCut({
+        exportId,
         path: sourcePath,
         clips: clips.map((clip) => serializeClipForExport(clip, sourcePath)),
         output: {
@@ -2441,11 +2959,13 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
         return
       }
 
+      setExportProgress(1)
       setExportStatus(`已导出 ${result.item?.name || result.outputPath || ''}`)
     } catch (error) {
       setExportStatus(error instanceof Error ? error.message : '导出失败')
     } finally {
       setIsExporting(false)
+      exportIdRef.current = ''
     }
   }
 
@@ -2454,6 +2974,26 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const selectedIsOverlay = selectedClip?.kind === 'image' || selectedClip?.kind === 'text'
   const selectedIsText = selectedClip?.kind === 'text'
   const timelineTools = TOOLS.filter((tool) => tool.id !== 'export')
+  const visibleTimelineTracks = useMemo(() => {
+    if (
+      !timelineDragPreview?.isNewTrack ||
+      !timelineDragPreview.targetTrackId ||
+      timelineTracks.some((track) => track.id === timelineDragPreview.targetTrackId)
+    ) {
+      return timelineTracks
+    }
+
+    const nextTracks = [...timelineTracks]
+    const insertIndex =
+      nextTracks.findLastIndex((track) => track.kind === timelineDragPreview.newTrackKind) + 1
+    nextTracks.splice(Math.max(0, insertIndex), 0, {
+      id: timelineDragPreview.targetTrackId,
+      isPreview: true,
+      kind: timelineDragPreview.newTrackKind
+    })
+    return nextTracks
+  }, [timelineDragPreview, timelineTracks])
+  const exportProgressText = isExporting ? `导出进度 ${formatExportProgress(exportProgress)}` : ''
   const capabilityState = [
     { done: true, label: '视频裁剪拼接' },
     { done: true, label: '时间线缩略图' },
@@ -2497,6 +3037,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
                 preload="auto"
                 controls={false}
                 $visible={isPreviewVideoVisible}
+                onPointerDown={selectActiveVideoClipFromPreview}
               />
               <PreviewOverlayLayer>
                 <CenterGuide $axis="x" $visible={centerGuides.x} />
@@ -2905,7 +3446,9 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
                 />
               </Field>
             </FieldGrid>
-            <SubTitle>{exportStatus || `Thumbnails: ${thumbStatus}`}</SubTitle>
+            <SubTitle>
+              {exportProgressText || exportStatus || `Thumbnails: ${thumbStatus}`}
+            </SubTitle>
             <TodoList>
               {capabilityState.map((item) => (
                 <TodoItem key={item.label}>
@@ -2973,16 +3516,21 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
             <IconButton type="button" title="Reset" onClick={resetProject}>
               ↺
             </IconButton>
-            <IconButton
+            <ExportButton
               type="button"
-              title={isExporting ? 'Exporting' : 'Export'}
+              title={isExporting ? exportProgressText : 'Export'}
               $primary
+              $exporting={isExporting}
               onClick={exportCut}
               disabled={isExporting}
             >
-              ⇩
-            </IconButton>
-            {exportStatus ? <InlineStatus title={exportStatus}>{exportStatus}</InlineStatus> : null}
+              {isExporting ? formatExportProgress(exportProgress) : '⇩'}
+            </ExportButton>
+            {exportProgressText || exportStatus ? (
+              <InlineStatus title={exportProgressText || exportStatus}>
+                {exportProgressText || exportStatus}
+              </InlineStatus>
+            ) : null}
             <ZoomLabel>{Math.round(zoom)} px/s</ZoomLabel>
           </TimelineEditActions>
         </TimelineTop>
@@ -3000,20 +3548,47 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
         <TrackViewport ref={trackViewportRef} onScroll={handleTimelineScroll}>
           <TrackContent style={{ width: timelineWidth + TRACK_GUTTER_WIDTH }}>
             <Playhead ref={playheadRef} onPointerDown={startPlayheadDrag} />
-            {timelineTracks.map((track) => (
-              <TrackRow key={track.id}>
-                <TrackLabel />
-                <Lane $kind={track.kind} onPointerDown={handleLanePointerDown}>
-                  {clips
-                    .filter((clip) => clip.trackId === track.id)
-                    .map((clip) => {
+            {visibleTimelineTracks.map((track) => {
+              const showOriginPlaceholder = draggedTimelineClip?.trackId === track.id
+              const laneDropState =
+                timelineDragPreview?.targetTrackId === track.id
+                  ? timelineDragPreview.dropState
+                  : undefined
+              return (
+                <TrackRow key={track.id}>
+                  <TrackLabel />
+                  <Lane
+                    $dimmed={Boolean(
+                      timelineDragPreview && draggedTimelineClip?.kind !== track.kind
+                    )}
+                    $dropState={laneDropState}
+                    $kind={track.kind}
+                    data-track-id={track.id}
+                    data-track-kind={track.kind}
+                    data-track-preview={track.isPreview ? 'true' : undefined}
+                    onPointerDown={handleLanePointerDown}
+                  >
+                    {showOriginPlaceholder ? (
+                      <ClipPlaceholder
+                        $left={draggedTimelineClip.startTime * zoom}
+                        $width={Math.max(28, draggedTimelineClip.duration * zoom)}
+                      />
+                    ) : null}
+                    {(clipsByTrackId.get(track.id) || []).map((clip) => {
                       const left = clip.startTime * zoom
                       const width = Math.max(28, clip.duration * zoom)
                       const selected = clip.id === selectedClipId
-                      const clipThumbnails = getClipThumbnails(clip, thumbnails)
+                      const clipThumbnails = clipThumbnailsById.get(clip.id) || []
+                      const dragPreview =
+                        timelineDragPreview?.clipId === clip.id ? timelineDragPreview : null
                       return (
                         <Clip
                           key={clip.id}
+                          data-clip-id={clip.id}
+                          $dragDeltaX={dragPreview?.deltaX || 0}
+                          $dragDeltaY={dragPreview?.deltaY || 0}
+                          $dragging={Boolean(dragPreview)}
+                          $dropState={dragPreview?.dropState}
                           $kind={clip.kind}
                           $left={left}
                           $selected={selected}
@@ -3057,9 +3632,10 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
                         </Clip>
                       )
                     })}
-                </Lane>
-              </TrackRow>
-            ))}
+                  </Lane>
+                </TrackRow>
+              )
+            })}
           </TrackContent>
         </TrackViewport>
       </Timeline>
