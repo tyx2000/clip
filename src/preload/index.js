@@ -50,6 +50,9 @@ const api = {
     ipcRenderer.invoke('extractRecordingEditorThumbnails', payload),
   /** 响应功能：导出录屏剪辑结果。 */
   exportRecordingEditorCut: (payload) => ipcRenderer.invoke('exportRecordingEditorCut', payload),
+  /** 响应功能：取消正在执行的录屏剪辑导出任务。 */
+  cancelRecordingEditorExport: (payload) =>
+    ipcRenderer.invoke('cancelRecordingEditorExport', payload),
   /** 响应功能：监听录屏剪辑导出进度。 */
   onRecordingEditorExportProgress: (listener) => {
     const wrappedListener = (_, payload) => listener(payload)

@@ -42,6 +42,7 @@ import { stat } from 'fs/promises'
 // 这里只保留“用户首选录制源 id”这一份轻量状态。
 // 目的是让 displayMedia 请求和 IPC 设置源之间共享同一个偏好值。
 let preferredDisplaySourceId = ''
+const activeEditorExports = new Map()
 
 /** 根据记录的偏好录制源 id 选出最终录制源。 */
 export function resolvePreferredRecordingDisplaySource(sources) {
@@ -329,12 +330,21 @@ export function registerRecordingHandlers() {
     if (!isRecordingFilePath(filePath)) {
       return { ok: false, message: 'Invalid recording path.' }
     }
+    if (!exportId) {
+      return { ok: false, message: 'Missing export id.' }
+    }
+    if (activeEditorExports.has(exportId)) {
+      return { ok: false, message: 'Export task is already running.' }
+    }
 
+    const abortController = new AbortController()
+    activeEditorExports.set(exportId, abortController)
     try {
       const outputPath = await exportRecordingCut({
         filePath,
         clips: payload?.clips,
         output: payload?.output,
+        signal: abortController.signal,
         onProgress: (progress) => {
           if (!exportId || event.sender.isDestroyed()) {
             return
@@ -357,11 +367,29 @@ export function registerRecordingHandlers() {
       const item = await buildRecordingItem(outputPath, outputStat)
       return { ok: true, item, outputPath }
     } catch (error) {
+      if (error?.name === 'AbortError') {
+        return { ok: false, cancelled: true, message: '导出已取消' }
+      }
+
       return {
         ok: false,
         message: error instanceof Error ? error.message : 'Failed to export cut.'
       }
+    } finally {
+      activeEditorExports.delete(exportId)
     }
+  })
+
+  /** 响应功能：取消正在执行的剪辑导出任务。 */
+  ipcMain.handle('cancelRecordingEditorExport', (_, payload = {}) => {
+    const exportId = typeof payload?.exportId === 'string' ? payload.exportId : ''
+    const abortController = activeEditorExports.get(exportId)
+    if (!exportId || !abortController) {
+      return { ok: false, message: 'Export task not found.' }
+    }
+
+    abortController.abort()
+    return { ok: true }
   })
 
   /** 响应功能：在系统文件管理器中高亮录屏文件。 */

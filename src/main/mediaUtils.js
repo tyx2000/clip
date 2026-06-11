@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, desktopCapturer, protocol, shell, systemPreferences } from 'electron'
 import { createReadStream, existsSync } from 'fs'
-import { chmod, mkdir, readFile, readdir, stat } from 'fs/promises'
+import { chmod, mkdir, readFile, readdir, stat, unlink } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
 import { dirname, extname, join, resolve, sep } from 'path'
 import { Readable } from 'node:stream'
@@ -580,17 +580,39 @@ function parseFfmpegProgressSeconds(value) {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null
 }
 
+function createAbortError(message = 'Export cancelled.') {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
+
 /** 执行一次 ffmpeg 命令，并在失败时抛出带上下文的错误。 */
-export async function runFfmpeg(args, { durationSec = 0, onProgress } = {}) {
+export async function runFfmpeg(args, { durationSec = 0, onProgress, signal } = {}) {
   const executablePath = await resolveFfmpegExecutable()
 
   await new Promise((resolveCallback, rejectCallback) => {
+    if (signal?.aborted) {
+      rejectCallback(createAbortError())
+      return
+    }
+
     const child = spawn(executablePath, args, {
       stdio: ['ignore', 'ignore', 'pipe']
     })
 
     let stderr = ''
     let lastProgress = 0
+    let didAbort = false
+    let killTimer = null
+    const abortFfmpeg = () => {
+      didAbort = true
+      child.kill('SIGTERM')
+      killTimer = setTimeout(() => {
+        child.kill('SIGKILL')
+      }, 1500)
+    }
+
+    signal?.addEventListener('abort', abortFfmpeg, { once: true })
     const emitProgress = (seconds) => {
       if (!(durationSec > 0) || typeof onProgress !== 'function') {
         return
@@ -616,10 +638,23 @@ export async function runFfmpeg(args, { durationSec = 0, onProgress } = {}) {
     })
 
     child.on('error', (error) => {
+      signal?.removeEventListener('abort', abortFfmpeg)
+      if (killTimer) {
+        clearTimeout(killTimer)
+      }
       rejectCallback(error)
     })
 
     child.on('close', (code) => {
+      signal?.removeEventListener('abort', abortFfmpeg)
+      if (killTimer) {
+        clearTimeout(killTimer)
+      }
+      if (didAbort || signal?.aborted) {
+        rejectCallback(createAbortError())
+        return
+      }
+
       if (code === 0) {
         if (typeof onProgress === 'function') {
           onProgress(1)
@@ -809,7 +844,13 @@ export async function extractRecordingThumbnails({
 }
 
 /** 使用 ffmpeg 按剪辑时间线导出录屏视频。 */
-export async function exportRecordingCut({ filePath, clips = [], output = {}, onProgress }) {
+export async function exportRecordingCut({
+  filePath,
+  clips = [],
+  output = {},
+  onProgress,
+  signal
+}) {
   if (!isRecordingFilePath(filePath) || !existsSync(filePath)) {
     throw new Error('Invalid recording path.')
   }
@@ -1058,33 +1099,40 @@ export async function exportRecordingCut({ filePath, clips = [], output = {}, on
   const filterComplex = filters.join(';')
 
   await mkdir(dirname(outputFilePath), { recursive: true })
-  await runFfmpeg(
-    [
-      '-y',
-      '-hide_banner',
-      ...inputArgs,
-      '-filter_complex',
-      filterComplex,
-      '-map',
-      '[outv]',
-      ...(audioLabels.length ? ['-map', '[aout]'] : ['-an']),
-      '-c:v',
-      'libvpx-vp9',
-      '-b:v',
-      bitrate ? String(bitrate) : '4M',
-      '-row-mt',
-      '1',
-      '-deadline',
-      'realtime',
-      '-cpu-used',
-      '4',
-      ...(audioLabels.length ? ['-c:a', 'libopus', '-b:a', '128k'] : []),
-      '-t',
-      String(roundFilterNumber(timelineDuration)),
-      outputFilePath
-    ],
-    { durationSec: timelineDuration, onProgress }
-  )
+  try {
+    await runFfmpeg(
+      [
+        '-y',
+        '-hide_banner',
+        ...inputArgs,
+        '-filter_complex',
+        filterComplex,
+        '-map',
+        '[outv]',
+        ...(audioLabels.length ? ['-map', '[aout]'] : ['-an']),
+        '-c:v',
+        'libvpx-vp9',
+        '-b:v',
+        bitrate ? String(bitrate) : '4M',
+        '-row-mt',
+        '1',
+        '-deadline',
+        'realtime',
+        '-cpu-used',
+        '4',
+        ...(audioLabels.length ? ['-c:a', 'libopus', '-b:a', '128k'] : []),
+        '-t',
+        String(roundFilterNumber(timelineDuration)),
+        outputFilePath
+      ],
+      { durationSec: timelineDuration, onProgress, signal }
+    )
+  } catch (error) {
+    if (signal?.aborted && existsSync(outputFilePath)) {
+      await unlink(outputFilePath).catch(() => {})
+    }
+    throw error
+  }
 
   return outputFilePath
 }

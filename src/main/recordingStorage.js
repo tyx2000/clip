@@ -43,6 +43,27 @@ function parseDataUrl(dataUrl = '') {
 // SQLite 连接做成模块级单例，避免每次查询都重新打开数据库句柄。
 let recordingMetadataDb = null
 
+function ensureRecordingsSourceColumn(db) {
+  const columns = db.prepare('PRAGMA table_info(recordings)').all()
+  const hasSourceColumn = columns.some((column) => column?.name === 'source_json')
+  if (!hasSourceColumn) {
+    db.exec('ALTER TABLE recordings ADD COLUMN source_json TEXT')
+  }
+}
+
+function parseJsonObject(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 /** 获取录制元数据库连接，并在首次访问时完成建表。 */
 function getRecordingMetadataDatabase() {
   if (recordingMetadataDb) {
@@ -59,6 +80,8 @@ function getRecordingMetadataDatabase() {
       file_path TEXT PRIMARY KEY,
       -- duration_sec: 探测出的最终录屏时长，单位秒。
       duration_sec REAL,
+      -- source_json: 可选来源分类，剪辑导出等派生文件用它和原始录制区分。
+      source_json TEXT,
       -- updated_at: 这条录屏元数据最后一次写入时间戳。
       updated_at INTEGER NOT NULL
     );
@@ -154,6 +177,7 @@ function getRecordingMetadataDatabase() {
       PRIMARY KEY (session_id, segment_index)
     );
   `)
+  ensureRecordingsSourceColumn(db)
   recordingMetadataDb = db
   return db
 }
@@ -348,6 +372,7 @@ export function readRecordingMetadata(filePath) {
       `
         SELECT
           recordings.duration_sec AS durationSec,
+          recordings.source_json AS sourceJson,
           recording_cloud_sync_state.cloud_sync_json AS cloudSyncJson
         FROM recordings
         LEFT JOIN recording_cloud_sync_state
@@ -361,20 +386,14 @@ export function readRecordingMetadata(filePath) {
     return null
   }
 
-  let cloudSync = null
-  if (typeof row.cloudSyncJson === 'string' && row.cloudSyncJson.trim()) {
-    try {
-      cloudSync = JSON.parse(row.cloudSyncJson)
-    } catch {
-      // 元数据 JSON 损坏时回退成 null，避免列表页因为单条坏数据整体失败。
-      cloudSync = null
-    }
-  }
+  const cloudSync = parseJsonObject(row.cloudSyncJson)
+  const source = parseJsonObject(row.sourceJson)
 
   const durationSec = Number(row.durationSec || 0)
   return {
     durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null,
-    cloudSync: cloudSync && typeof cloudSync === 'object' ? cloudSync : null
+    cloudSync,
+    source
   }
 }
 
@@ -405,6 +424,9 @@ export function writeRecordingMetadata(filePath, metadata) {
     metadata?.cloudSync && typeof metadata.cloudSync === 'object'
       ? JSON.stringify(metadata.cloudSync)
       : null
+  const shouldUpdateSource = Object.prototype.hasOwnProperty.call(metadata || {}, 'source')
+  const sourceJson =
+    metadata?.source && typeof metadata.source === 'object' ? JSON.stringify(metadata.source) : null
 
   const normalizedPath = resolve(filePath)
   const updatedAt = Date.now()
@@ -412,16 +434,22 @@ export function writeRecordingMetadata(filePath, metadata) {
     // recordings 表记录最终成片的基础信息；cloud_sync_state 表单独存可选云同步摘要。
     db.prepare(
       `
-        INSERT INTO recordings (file_path, duration_sec, updated_at)
-        VALUES (?, ?, ?)
+        INSERT INTO recordings (file_path, duration_sec, source_json, updated_at)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(file_path) DO UPDATE SET
           duration_sec = excluded.duration_sec,
+          source_json = CASE
+            WHEN ? THEN excluded.source_json
+            ELSE recordings.source_json
+          END,
           updated_at = excluded.updated_at
       `
     ).run(
       normalizedPath,
       Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null,
-      updatedAt
+      shouldUpdateSource ? sourceJson : null,
+      updatedAt,
+      shouldUpdateSource ? 1 : 0
     )
 
     if (cloudSyncJson) {
@@ -830,16 +858,25 @@ export async function buildRecordingItem(filePath, fileStat) {
       ? probedDurationSec
       : metadata?.durationSec || null
   const cloudSync = metadata?.cloudSync || null
+  const fileName = filePath.split(sep).pop() || ''
+  const source =
+    metadata?.source && typeof metadata.source === 'object'
+      ? metadata.source
+      : fileName.startsWith('cut-')
+        ? { type: 'editor-cut' }
+        : { type: 'recording' }
 
   return {
-    name: filePath.split(sep).pop() || '',
+    name: fileName,
     path: filePath,
     fileUrl: `recording://media/${encodeURIComponent(filePath)}`,
     posterUrl,
     bytes: Number(fileStat.size || 0),
     createdAt,
     durationSec,
-    cloudSync
+    cloudSync,
+    source,
+    type: source.type || 'recording'
   }
 }
 

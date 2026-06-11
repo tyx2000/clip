@@ -1,4 +1,5 @@
 import PropTypes from 'prop-types'
+import { ExternalLink, FolderOpen, RefreshCw, Scissors, Trash2 } from 'lucide-react'
 import styled from 'styled-components'
 import {
   formatBytes,
@@ -101,6 +102,12 @@ const IconButton = styled.button`
   &:hover {
     background: #ffffff;
   }
+
+  svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 1;
+  }
 `
 
 const DeleteButton = styled(IconButton)`
@@ -123,101 +130,6 @@ const SyncMeta = styled.span`
   color: ${({ $failed }) => ($failed ? '#b91c1c' : '#0f766e')};
   font-weight: 600;
 `
-
-function OpenIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M14 5H19V10M19 5L11 13"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10 5H8C6.343 5 5 6.343 5 8V16C5 17.657 6.343 19 8 19H16C17.657 19 19 17.657 19 16V14"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function CutIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M6.5 7.5A2.5 2.5 0 1 0 6.5 12.5A2.5 2.5 0 0 0 6.5 7.5Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M6.5 11.5A2.5 2.5 0 1 0 6.5 16.5A2.5 2.5 0 0 0 6.5 11.5Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M9 10L19 4.5M9 14L19 19.5"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function RevealIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M3 8.5C3 7.12 4.12 6 5.5 6H8.2C8.8 6 9.35 6.33 9.63 6.86L10.1 7.8C10.37 8.33 10.92 8.66 11.52 8.66H18.5C19.88 8.66 21 9.78 21 11.16V16.5C21 17.88 19.88 19 18.5 19H5.5C4.12 19 3 17.88 3 16.5V8.5Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-function DeleteIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M4 7H20" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path
-        d="M8.5 7V5.8C8.5 4.81 9.31 4 10.3 4H13.7C14.69 4 15.5 4.81 15.5 5.8V7"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M18 7L17.44 16.9C17.38 17.99 16.48 18.84 15.39 18.84H8.61C7.52 18.84 6.62 17.99 6.56 16.9L6 7"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path d="M10 10.5V15.5M14 10.5V15.5" stroke="currentColor" strokeWidth="1.8" />
-    </svg>
-  )
-}
-
-function SyncIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M20 12A8 8 0 1 1 17.66 6.34"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M20 4V10H14"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
 
 function getCloudSyncLabel(cloudSync) {
   if (!cloudSync?.enabled) {
@@ -268,7 +180,7 @@ function RecordingVideoCard({ item, onOpen, onCut, onReveal, onDelete, onRetryCl
               title="重试云同步"
               onClick={() => onRetryCloudSync(item)}
             >
-              <SyncIcon />
+              <RefreshCw aria-hidden="true" />
             </RetryButton>
           ) : null}
           <IconButton
@@ -277,7 +189,7 @@ function RecordingVideoCard({ item, onOpen, onCut, onReveal, onDelete, onRetryCl
             title="打开剪辑"
             onClick={() => onCut(item.path)}
           >
-            <CutIcon />
+            <Scissors aria-hidden="true" />
           </IconButton>
           <IconButton
             type="button"
@@ -285,7 +197,7 @@ function RecordingVideoCard({ item, onOpen, onCut, onReveal, onDelete, onRetryCl
             title="打开播放"
             onClick={() => onOpen(item.path)}
           >
-            <OpenIcon />
+            <ExternalLink aria-hidden="true" />
           </IconButton>
           <IconButton
             type="button"
@@ -293,7 +205,7 @@ function RecordingVideoCard({ item, onOpen, onCut, onReveal, onDelete, onRetryCl
             title="在文件夹中显示"
             onClick={() => onReveal(item.path)}
           >
-            <RevealIcon />
+            <FolderOpen aria-hidden="true" />
           </IconButton>
           <DeleteButton
             type="button"
@@ -301,7 +213,7 @@ function RecordingVideoCard({ item, onOpen, onCut, onReveal, onDelete, onRetryCl
             title="删除视频"
             onClick={() => onDelete(item)}
           >
-            <DeleteIcon />
+            <Trash2 aria-hidden="true" />
           </DeleteButton>
         </FloatingActions>
       </PreviewWrap>

@@ -132,6 +132,24 @@ const SectionTitle = styled.h2`
   font-size: 16px;
 `
 
+const CategorySection = styled.section`
+  display: grid;
+  gap: 12px;
+
+  & + & {
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line-soft);
+  }
+`
+
+const CategoryTitle = styled.h3`
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 13px;
+  font-weight: 700;
+`
+
 const EmptyState = styled.p`
   margin: 0;
   font-size: 13px;
@@ -241,6 +259,20 @@ function App() {
     preferredMimeType,
     applySessionStats
   })
+  const recordedVideos = useMemo(
+    () =>
+      recordings.filter(
+        (item) => item?.type !== 'editor-cut' && item?.source?.type !== 'editor-cut'
+      ),
+    [recordings]
+  )
+  const cutVideos = useMemo(
+    () =>
+      recordings.filter(
+        (item) => item?.type === 'editor-cut' || item?.source?.type === 'editor-cut'
+      ),
+    [recordings]
+  )
 
   if (isPlayerWindow) {
     return (
@@ -323,19 +355,46 @@ function App() {
             ) : recordings.length === 0 ? (
               <EmptyState>暂无录屏文件</EmptyState>
             ) : (
-              <RecordingGrid>
-                {recordings.map((item) => (
-                  <RecordingVideoCard
-                    key={item.path}
-                    item={item}
-                    onOpen={handleOpenRecording}
-                    onCut={handleOpenRecordingEditor}
-                    onReveal={handleRevealRecording}
-                    onDelete={handleDeleteRecordingWithGuard}
-                    onRetryCloudSync={handleRetryCloudSync}
-                  />
-                ))}
-              </RecordingGrid>
+              <>
+                <CategorySection>
+                  {recordedVideos.length === 0 ? (
+                    <EmptyState>暂无录制视频</EmptyState>
+                  ) : (
+                    <RecordingGrid>
+                      {recordedVideos.map((item) => (
+                        <RecordingVideoCard
+                          key={item.path}
+                          item={item}
+                          onOpen={handleOpenRecording}
+                          onCut={handleOpenRecordingEditor}
+                          onReveal={handleRevealRecording}
+                          onDelete={handleDeleteRecordingWithGuard}
+                          onRetryCloudSync={handleRetryCloudSync}
+                        />
+                      ))}
+                    </RecordingGrid>
+                  )}
+                </CategorySection>
+
+                {cutVideos.length > 0 ? (
+                  <CategorySection>
+                    <CategoryTitle>剪辑导出</CategoryTitle>
+                    <RecordingGrid>
+                      {cutVideos.map((item) => (
+                        <RecordingVideoCard
+                          key={item.path}
+                          item={item}
+                          onOpen={handleOpenRecording}
+                          onCut={handleOpenRecordingEditor}
+                          onReveal={handleRevealRecording}
+                          onDelete={handleDeleteRecordingWithGuard}
+                          onRetryCloudSync={handleRetryCloudSync}
+                        />
+                      ))}
+                    </RecordingGrid>
+                  </CategorySection>
+                ) : null}
+              </>
             )}
           </VideosGrid>
         </ListWrap>
