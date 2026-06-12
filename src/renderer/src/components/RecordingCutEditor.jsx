@@ -1,7 +1,13 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import PropTypes from 'prop-types'
 import styled from 'styled-components'
-import { MEDIA_TOOLS, TIMELINE_ZOOM_DEFAULT, TRACK_GUTTER_WIDTH } from './cut-editor/constants'
+import {
+  DEFAULT_VIDEO_TRANSITION_SECONDS,
+  MEDIA_TOOLS,
+  MIN_CLIP_DURATION,
+  TIMELINE_ZOOM_DEFAULT,
+  TRACK_GUTTER_WIDTH
+} from './cut-editor/constants'
 import {
   applySeek,
   clamp,
@@ -10,13 +16,16 @@ import {
   formatEditorTime,
   formatExportProgress,
   formatRulerTime,
+  getAvailableTrackId,
   getClipSourceEnd,
   getClipThumbnails,
   getPreviewOverlaySignature,
   getRulerStep,
   getTimelineEnd,
   getTimelineTracks,
+  getVideoTransitionAtTime,
   getVisiblePreviewClips,
+  hasTrackOverlap,
   isClipActiveAtTime
 } from './cut-editor/timelineModel'
 import { duplicateClip, splitClipAtTime } from './cut-editor/clipFactory'
@@ -44,18 +53,54 @@ const Shell = styled.main`
 `
 
 const Workspace = styled.section`
+  position: relative;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 318px;
+  grid-template-columns: minmax(0, 1fr);
   border-bottom: 1px solid #252b34;
+  overflow: hidden;
 `
 
 const HiddenInput = styled.input`
   display: none;
 `
 
+const InspectorDock = styled.div`
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: calc(var(--timeline-height) + 7px);
+  width: 28px;
+  z-index: 80;
+
+  .inspector-panel {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    width: 278px;
+    transform: translate(calc(100% + 24px), -50%);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      transform 180ms ease,
+      opacity 180ms ease;
+  }
+
+  &:hover .inspector-panel,
+  &:focus-within .inspector-panel {
+    transform: translate(0, -50%);
+    opacity: 1;
+    pointer-events: auto;
+  }
+`
+
+function roundInspectorTime(value) {
+  return Math.round((Number(value) || 0) * 1000) / 1000
+}
+
 function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const videoRef = useRef(null)
+  const videoShellRef = useRef(null)
   const playheadRef = useRef(null)
   const rulerViewportRef = useRef(null)
   const trackViewportRef = useRef(null)
@@ -78,6 +123,8 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   const durationRef = useRef(0)
   const timelineDurationRef = useRef(1)
   const zoomRef = useRef(TIMELINE_ZOOM_DEFAULT)
+  const playbackRateRef = useRef(1)
+  const volumeRef = useRef(1)
   const clipsRef = useRef([])
   const selectedClipIdRef = useRef('')
   const videoClipsRef = useRef([])
@@ -326,6 +373,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
 
   function syncVideoPlayback(time, playing = false) {
     const video = videoRef.current
+    const videoShell = videoShellRef.current
     if (!video) {
       return
     }
@@ -334,6 +382,10 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     if (!clip) {
       activeVideoClipIdRef.current = ''
       video.pause()
+      if (videoShell) {
+        videoShell.style.opacity = '0'
+        videoShell.style.transform = 'none'
+      }
       setPreviewVideoVisible(false)
       return
     }
@@ -349,16 +401,26 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     const sourceTime = clamp(
       Number(clip.sourceStart || 0) + (time - clip.startTime),
       Number(clip.sourceStart || 0),
-      getClipSourceEnd(clip)
+      Math.max(Number(clip.sourceStart || 0), getClipSourceEnd(clip) - 0.033)
     )
     const enteredClip = activeVideoClipIdRef.current !== clip.id
     activeVideoClipIdRef.current = clip.id
     setPreviewVideoVisible(true)
-    video.playbackRate = playbackRate
-    video.volume = volume
+    const videoTransition = getVideoTransitionAtTime(clip, time)
+    if (videoShell) {
+      videoShell.style.opacity = String(videoTransition.opacity)
+      videoShell.style.transform = videoTransition.transform
+    }
+    video.playbackRate = playbackRateRef.current
+    video.volume = volumeRef.current
 
-    if (enteredClip || Math.abs(video.currentTime - sourceTime) > 0.12 || !playing) {
-      video.currentTime = sourceTime
+    const seekThreshold = playing ? 0.12 : 0.03
+    if (enteredClip || Math.abs(video.currentTime - sourceTime) > seekThreshold) {
+      if (typeof video.fastSeek === 'function') {
+        video.fastSeek(sourceTime)
+      } else {
+        video.currentTime = sourceTime
+      }
     }
 
     if (playing && video.paused) {
@@ -403,8 +465,8 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
 
       hasActiveAudio = true
       const sourceTime = Number(clip.sourceStart || 0) + (time - clip.startTime)
-      audio.volume = clamp(Number(clip.volume ?? 1) * volume, 0, 1)
-      audio.playbackRate = playbackRate
+      audio.volume = clamp(Number(clip.volume ?? 1) * volumeRef.current, 0, 1)
+      audio.playbackRate = playbackRateRef.current
       if (Math.abs(audio.currentTime - sourceTime) > 0.08 || audio.paused) {
         audio.currentTime = Math.max(0, sourceTime)
       }
@@ -483,7 +545,8 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     stopTimelineAnimation()
 
     const tick = (now) => {
-      const elapsed = ((now - timelinePlaybackRef.current.startedAt) / 1000) * playbackRate
+      const elapsed =
+        ((now - timelinePlaybackRef.current.startedAt) / 1000) * playbackRateRef.current
       const nextTime = Math.min(
         timelineDurationRef.current,
         timelinePlaybackRef.current.startTime + elapsed
@@ -511,6 +574,8 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     durationRef.current = duration
     timelineDurationRef.current = timelineDuration
     zoomRef.current = zoom
+    playbackRateRef.current = playbackRate
+    volumeRef.current = volume
     clipsRef.current = clips
     selectedClipIdRef.current = selectedClipId
     videoClipsRef.current = videoClips
@@ -634,6 +699,14 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   }, [duration, mediaName, sourcePath])
 
   useEffect(() => {
+    playbackRateRef.current = playbackRate
+    if (isTimelinePlayingRef.current) {
+      timelinePlaybackRef.current = {
+        startedAt: performance.now(),
+        startTime: currentTimeRef.current
+      }
+    }
+
     const video = videoRef.current
     if (video) {
       video.playbackRate = playbackRate
@@ -644,6 +717,7 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
   }, [playbackRate])
 
   useEffect(() => {
+    volumeRef.current = volume
     const video = videoRef.current
     if (video) {
       video.volume = volume
@@ -908,6 +982,70 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
     applyClips((previous) =>
       previous.map((clip) => (clip.id === selectedClip.id ? { ...clip, ...patch } : clip))
     )
+
+    if (
+      selectedClip.kind === 'video' &&
+      Object.keys(patch).some((key) => key.startsWith('videoInTransition'))
+    ) {
+      const transitionSeconds =
+        Number(patch.videoInTransitionSeconds) ||
+        selectedClip.videoInTransitionSeconds ||
+        DEFAULT_VIDEO_TRANSITION_SECONDS
+      seekTo(selectedClip.startTime + Math.min(selectedClip.duration / 2, transitionSeconds / 2))
+    } else if (
+      selectedClip.kind === 'video' &&
+      Object.keys(patch).some((key) => key.startsWith('videoOutTransition'))
+    ) {
+      const transitionSeconds =
+        Number(patch.videoOutTransitionSeconds) ||
+        selectedClip.videoOutTransitionSeconds ||
+        DEFAULT_VIDEO_TRANSITION_SECONDS
+      seekTo(
+        Math.max(
+          selectedClip.startTime,
+          selectedClip.startTime + selectedClip.duration - transitionSeconds / 2
+        )
+      )
+    }
+  }
+
+  function commitSelectedClipTiming(patch) {
+    if (!selectedClip) {
+      return
+    }
+
+    applyClips((previous) =>
+      previous.map((clip) => {
+        if (clip.id !== selectedClip.id) {
+          return clip
+        }
+
+        const nextClip = { ...clip, ...patch }
+        const sourceDuration =
+          nextClip.kind === 'video' || nextClip.kind === 'audio'
+            ? Number(nextClip.sourceDuration || 0) - Number(nextClip.sourceStart || 0)
+            : 0
+        const maxDuration =
+          sourceDuration > 0
+            ? Math.max(MIN_CLIP_DURATION, sourceDuration)
+            : Number.POSITIVE_INFINITY
+        const duration = roundInspectorTime(
+          clamp(Number(nextClip.duration) || MIN_CLIP_DURATION, MIN_CLIP_DURATION, maxDuration)
+        )
+        const startTime = roundInspectorTime(Math.max(0, Number(nextClip.startTime) || 0))
+        const candidate = {
+          ...nextClip,
+          duration,
+          startTime
+        }
+        const otherClips = previous.filter((otherClip) => otherClip.id !== clip.id)
+        const trackId = hasTrackOverlap(otherClips, candidate, candidate.trackId)
+          ? getAvailableTrackId(otherClips, candidate.kind, startTime, duration)
+          : candidate.trackId
+
+        return { ...candidate, trackId }
+      })
+    )
   }
 
   const visibleTimelineTracks = useMemo(() => {
@@ -958,11 +1096,19 @@ function RecordingCutEditor({ videoUrl, fileUrl, sourcePath, displayName }) {
           onImageResizeStart={startImageResize}
           onOverlayDragStart={startOverlayDrag}
           onPreviewVideoPointerDown={selectActiveVideoClipFromPreview}
+          videoShellRef={videoShellRef}
           videoRef={videoRef}
           visiblePreviewClips={visiblePreviewClips}
         />
 
-        <InspectorPanel onSelectedClipChange={updateSelectedClip} selectedClip={selectedClip} />
+        <InspectorDock>
+          <InspectorPanel
+            className="inspector-panel"
+            onSelectedClipChange={updateSelectedClip}
+            onSelectedClipCommit={commitSelectedClipTiming}
+            selectedClip={selectedClip}
+          />
+        </InspectorDock>
       </Workspace>
       <TimelinePanel
         clipThumbnailsById={clipThumbnailsById}

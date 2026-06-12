@@ -1,6 +1,7 @@
 import {
   BASE_TRACKS,
   CENTER_SNAP_THRESHOLD,
+  DEFAULT_VIDEO_TRANSITION_SECONDS,
   CLIP_SNAP_DISTANCE_PX,
   DEFAULT_TRANSITION,
   MIN_CLIP_DURATION,
@@ -310,7 +311,20 @@ export function getMoveDragCandidate(drag, event, zoomValue, clips = []) {
 }
 
 export function findVideoClipAtTime(clips, time) {
-  return clips.find((clip) => time >= clip.startTime && time < getClipEnd(clip))
+  const directClip = clips.find((clip) => time >= clip.startTime && time < getClipEnd(clip))
+  if (directClip) {
+    return directClip
+  }
+
+  const edgeEpsilon = 0.001
+  return (
+    clips.find(
+      (clip) =>
+        time > clip.startTime &&
+        Math.abs(time - getClipEnd(clip)) <= edgeEpsilon &&
+        !clips.some((nextClip) => Math.abs(nextClip.startTime - time) <= edgeEpsilon)
+    ) || null
+  )
 }
 
 export function getClipThumbnails(clip, thumbnails) {
@@ -357,6 +371,84 @@ export function getOverlayTransitionAtTime(clip, time) {
   return {
     alpha: progress,
     axisScale: transitionType === 'rotateY' ? Math.cos((1 - progress) * (Math.PI / 2)) : 1
+  }
+}
+
+function getVideoTransitionProgress(clip, time, direction) {
+  const start = Number(clip.startTime || 0)
+  const duration = Number(clip.duration || 0)
+  const end = start + duration
+  const type = clip[`${direction}TransitionType`] || 'none'
+  const fallbackSeconds = type === 'none' ? 0 : DEFAULT_VIDEO_TRANSITION_SECONDS
+  const transitionSeconds = Math.min(
+    Math.max(0, Number(clip[`${direction}TransitionSeconds`]) || fallbackSeconds),
+    duration / 2
+  )
+
+  if (transitionSeconds <= 0) {
+    return 1
+  }
+
+  if (direction === 'videoIn') {
+    return clamp((time - start) / transitionSeconds, 0, 1)
+  }
+
+  return clamp((end - time) / transitionSeconds, 0, 1)
+}
+
+function getVideoTransitionTransform(type, progress, direction) {
+  if (type === 'slideLeft') {
+    return `translateX(${direction === 'videoIn' ? (progress - 1) * 100 : (1 - progress) * -100}%)`
+  }
+  if (type === 'slideRight') {
+    return `translateX(${direction === 'videoIn' ? (1 - progress) * 100 : (1 - progress) * 100}%)`
+  }
+  if (type === 'slideUp') {
+    return `translateY(${direction === 'videoIn' ? (progress - 1) * 100 : (1 - progress) * -100}%)`
+  }
+  if (type === 'slideDown') {
+    return `translateY(${direction === 'videoIn' ? (1 - progress) * 100 : (1 - progress) * 100}%)`
+  }
+
+  return 'none'
+}
+
+export function getVideoTransitionAtTime(clip, time) {
+  const start = Number(clip.startTime || 0)
+  const duration = Number(clip.duration || 0)
+  const end = start + duration
+  const inType = clip.videoInTransitionType || 'none'
+  const outType = clip.videoOutTransitionType || 'none'
+  const inSeconds = Math.min(
+    Math.max(
+      0,
+      Number(clip.videoInTransitionSeconds) ||
+        (inType === 'none' ? 0 : DEFAULT_VIDEO_TRANSITION_SECONDS)
+    ),
+    duration / 2
+  )
+  const outSeconds = Math.min(
+    Math.max(
+      0,
+      Number(clip.videoOutTransitionSeconds) ||
+        (outType === 'none' ? 0 : DEFAULT_VIDEO_TRANSITION_SECONDS)
+    ),
+    duration / 2
+  )
+  const isInTransition = inType !== 'none' && inSeconds > 0 && time < start + inSeconds
+  const isOutTransition = outType !== 'none' && outSeconds > 0 && time > end - outSeconds
+
+  if (!isInTransition && !isOutTransition) {
+    return { opacity: 1, transform: 'none' }
+  }
+
+  const direction = isInTransition ? 'videoIn' : 'videoOut'
+  const type = isInTransition ? inType : outType
+  const progress = getVideoTransitionProgress(clip, time, direction)
+
+  return {
+    opacity: type === 'fade' ? progress : 1,
+    transform: getVideoTransitionTransform(type, progress, direction)
   }
 }
 
@@ -472,6 +564,10 @@ export function createVideoClip(duration, name) {
     sourceDuration: duration,
     startTime: 0,
     trackId: 'video',
+    videoInTransitionSeconds: DEFAULT_VIDEO_TRANSITION_SECONDS,
+    videoInTransitionType: 'none',
+    videoOutTransitionSeconds: DEFAULT_VIDEO_TRANSITION_SECONDS,
+    videoOutTransitionType: 'none',
     volume: 1
   }
 }

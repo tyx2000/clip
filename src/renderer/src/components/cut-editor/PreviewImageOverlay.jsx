@@ -23,18 +23,18 @@ const PreviewImageFrame = styled.div`
 
 const ResizeHandle = styled.span`
   position: absolute;
-  width: 12px;
-  height: 12px;
+  width: 3px;
+  height: 3px;
   border: 2px solid #ffffff;
   border-radius: 999px;
   background: #2f7df6;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
   pointer-events: auto;
   ${({ $corner }) => {
-    if ($corner === 'tl') return 'left: -6px; top: -6px; cursor: nwse-resize;'
-    if ($corner === 'tr') return 'right: -6px; top: -6px; cursor: nesw-resize;'
-    if ($corner === 'bl') return 'left: -6px; bottom: -6px; cursor: nesw-resize;'
-    return 'right: -6px; bottom: -6px; cursor: nwse-resize;'
+    if ($corner === 'tl') return 'left: -3px; top: -3px; cursor: nwse-resize;'
+    if ($corner === 'tr') return 'right: -3px; top: -3px; cursor: nesw-resize;'
+    if ($corner === 'bl') return 'left: -3px; bottom: -3px; cursor: nesw-resize;'
+    return 'right: -3px; bottom: -3px; cursor: nwse-resize;'
   }}
 `
 

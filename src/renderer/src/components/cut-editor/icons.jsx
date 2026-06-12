@@ -44,8 +44,17 @@ const ICONS = {
   zoomOut: ZoomOut
 }
 
-function renderIcon(Icon) {
-  return <Icon aria-hidden="true" size={ICON_SIZE} strokeWidth={1} />
+function renderIcon(Icon, title) {
+  return (
+    <Icon
+      aria-hidden={title ? undefined : 'true'}
+      role={title ? 'img' : undefined}
+      size={ICON_SIZE}
+      strokeWidth={1}
+    >
+      {title ? <title>{title}</title> : null}
+    </Icon>
+  )
 }
 
 export function ImageIcon() {
@@ -56,10 +65,15 @@ export function VideoIcon() {
   return renderIcon(Video)
 }
 
-export function EditorIcon({ id }) {
-  return renderIcon(ICONS[id] || Download)
+export function EditorIcon({ id, title }) {
+  return renderIcon(ICONS[id] || Download, title)
 }
 
 EditorIcon.propTypes = {
-  id: PropTypes.string.isRequired
+  id: PropTypes.string.isRequired,
+  title: PropTypes.string
+}
+
+EditorIcon.defaultProps = {
+  title: ''
 }

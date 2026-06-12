@@ -1,5 +1,5 @@
 /** 文件作用：注册主进程录屏 IPC，并把请求分发给录屏服务层。 */
-import { ipcMain, shell } from 'electron'
+import { BrowserWindow, ipcMain, shell } from 'electron'
 import { existsSync } from 'fs'
 import {
   clearCloudSyncWorker,
@@ -43,6 +43,14 @@ import { stat } from 'fs/promises'
 // 目的是让 displayMedia 请求和 IPC 设置源之间共享同一个偏好值。
 let preferredDisplaySourceId = ''
 const activeEditorExports = new Map()
+
+function notifyScreenRecordingsListInvalidated(payload = {}) {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send('screen-recordings-list-invalidated', payload)
+    }
+  })
+}
 
 /** 根据记录的偏好录制源 id 选出最终录制源。 */
 export function resolvePreferredRecordingDisplaySource(sources) {
@@ -365,6 +373,7 @@ export function registerRecordingHandlers() {
         }
       })
       const item = await buildRecordingItem(outputPath, outputStat)
+      notifyScreenRecordingsListInvalidated({ reason: 'editor-cut-exported', item })
       return { ok: true, item, outputPath }
     } catch (error) {
       if (error?.name === 'AbortError') {

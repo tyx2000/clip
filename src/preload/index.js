@@ -61,6 +61,14 @@ const api = {
       ipcRenderer.removeListener('recording-editor-export-progress', wrappedListener)
     }
   },
+  /** 响应功能：监听录屏列表失效事件，用于多窗口实时刷新列表。 */
+  onScreenRecordingsListInvalidated: (listener) => {
+    const wrappedListener = (_, payload) => listener(payload)
+    ipcRenderer.on('screen-recordings-list-invalidated', wrappedListener)
+    return () => {
+      ipcRenderer.removeListener('screen-recordings-list-invalidated', wrappedListener)
+    }
+  },
   /** 响应功能：读取用户选择文件的真实本地路径，供 ffmpeg 导出使用。 */
   getPathForFile: (file) => webUtils.getPathForFile(file),
   /** 响应功能：将本地路径转换为 renderer 可加载的 file URL。 */

@@ -1,37 +1,54 @@
+import { useState } from 'react'
 import PropTypes from 'prop-types'
 import styled from 'styled-components'
 
 import {
   DEFAULT_TRANSITION,
+  DEFAULT_VIDEO_TRANSITION_SECONDS,
   MIN_CLIP_DURATION,
   TEXT_ALIGN_OPTIONS,
   TEXT_DEFAULTS,
   TEXT_FONT_OPTIONS,
   TEXT_WEIGHT_OPTIONS,
-  TRANSITION_OPTIONS
+  TRANSITION_OPTIONS,
+  VIDEO_TRANSITION_OPTIONS
 } from './constants'
 import { ConfigItem as Field } from './ConfigItem'
 import { clamp } from './timelineModel'
 
 const Inspector = styled.aside`
-  min-height: 0;
+  max-height: calc(100vh - var(--timeline-height) - 31px);
   display: grid;
   align-content: start;
   grid-auto-rows: max-content;
   gap: 10px;
   padding: 12px;
-  border-left: 1px solid #252b34;
-  background: #15191f;
+  border: 1px solid #252b34;
+  border-radius: 10px;
+  background: rgba(21, 25, 31, 0.96);
+  box-shadow: 0 18px 58px rgba(0, 0, 0, 0.42);
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-color: #242a33 #11161d;
+  scrollbar-width: thin;
+
+  &::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #11161d;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: #242a33;
+  }
 `
 
 const Panel = styled.section`
   min-height: 0;
-  border: 1px solid #2a303a;
-  border-radius: 8px;
-  background: #1b2028;
-  padding: 10px;
   display: grid;
   gap: 10px;
 `
@@ -45,8 +62,8 @@ const PanelTitle = styled.h2`
 
 const FieldGrid = styled.div`
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
 `
 
 const Input = styled.input`
@@ -57,6 +74,25 @@ const Input = styled.input`
   padding: 0 8px;
   background: #11161d;
   color: #f5f7fb;
+
+  &[type='number'] {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+
+  &[type='number']::-webkit-inner-spin-button,
+  &[type='number']::-webkit-outer-spin-button {
+    margin: 0;
+    -webkit-appearance: none;
+  }
+
+  &[type='checkbox'] {
+    width: 16px;
+    height: 16px;
+    justify-self: end;
+    padding: 0;
+    accent-color: #2f7df6;
+  }
 `
 
 const Select = styled.select`
@@ -69,56 +105,135 @@ const Select = styled.select`
   color: #f5f7fb;
 `
 
-export function InspectorPanel({ onSelectedClipChange, selectedClip }) {
+function formatTimeInput(value) {
+  const numericValue = Number(value)
+  return (Number.isFinite(numericValue) ? Math.max(0, numericValue) : 0).toFixed(3)
+}
+
+function parseTimeInput(value, fallback = 0) {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? Math.max(0, numericValue) : fallback
+}
+
+export function InspectorPanel({
+  className,
+  onSelectedClipChange,
+  onSelectedClipCommit,
+  selectedClip
+}) {
   const selectedSupportsAudio = selectedClip?.kind === 'video' || selectedClip?.kind === 'audio'
+  const selectedIsVideo = selectedClip?.kind === 'video'
   const selectedIsOverlay = selectedClip?.kind === 'image' || selectedClip?.kind === 'text'
   const selectedIsText = selectedClip?.kind === 'text'
+  const [timeInputVersion, setTimeInputVersion] = useState(0)
+  const timeInputKey = `${selectedClip?.id || 'empty'}:${timeInputVersion}`
+  const startTime = selectedClip?.startTime || 0
+  const clipDuration = selectedClip?.duration || 0
+
+  const updateTimeField = (field, value) => {
+    if (!selectedClip) {
+      return
+    }
+
+    if (field === 'start') {
+      onSelectedClipChange({
+        startTime: parseTimeInput(value, selectedClip.startTime || 0)
+      })
+      return
+    }
+
+    if (field === 'duration') {
+      onSelectedClipChange({
+        duration: Math.max(MIN_CLIP_DURATION, parseTimeInput(value, selectedClip.duration || 0))
+      })
+      return
+    }
+
+    const nextEnd = parseTimeInput(value, selectedClip.startTime + selectedClip.duration)
+    onSelectedClipChange({
+      duration: Math.max(MIN_CLIP_DURATION, nextEnd - selectedClip.startTime)
+    })
+  }
+
+  const commitTimeField = (field, value) => {
+    if (!selectedClip) {
+      return
+    }
+
+    setTimeInputVersion((version) => version + 1)
+    if (field === 'start') {
+      onSelectedClipCommit({
+        startTime: parseTimeInput(value, selectedClip.startTime || 0)
+      })
+      return
+    }
+
+    if (field === 'duration') {
+      onSelectedClipCommit({
+        duration: Math.max(
+          MIN_CLIP_DURATION,
+          parseTimeInput(value, selectedClip.duration || MIN_CLIP_DURATION)
+        )
+      })
+      return
+    }
+
+    const nextEnd = parseTimeInput(value, selectedClip.startTime + selectedClip.duration)
+    onSelectedClipCommit({
+      duration: Math.max(MIN_CLIP_DURATION, nextEnd - selectedClip.startTime)
+    })
+  }
+  const updateVideoTransitionType = (direction, type) => {
+    const secondsKey = direction === 'in' ? 'videoInTransitionSeconds' : 'videoOutTransitionSeconds'
+    const typeKey = direction === 'in' ? 'videoInTransitionType' : 'videoOutTransitionType'
+    const currentSeconds = Number(selectedClip?.[secondsKey]) || 0
+
+    onSelectedClipChange({
+      [secondsKey]:
+        type === 'none' ? currentSeconds : currentSeconds || DEFAULT_VIDEO_TRANSITION_SECONDS,
+      [typeKey]: type
+    })
+  }
 
   return (
-    <Inspector>
+    <Inspector className={className}>
       <Panel>
         <PanelTitle>属性</PanelTitle>
         <FieldGrid>
           <Field>
             开始
             <Input
+              key={`start-${timeInputKey}`}
               type="number"
-              step="0.01"
-              value={selectedClip ? selectedClip.startTime : 0}
+              step="0.001"
+              defaultValue={formatTimeInput(startTime)}
               disabled={!selectedClip}
-              onChange={(event) =>
-                onSelectedClipChange({ startTime: Math.max(0, Number(event.target.value) || 0) })
-              }
+              onBlur={(event) => commitTimeField('start', event.currentTarget.value)}
+              onChange={(event) => updateTimeField('start', event.target.value)}
             />
           </Field>
           <Field>
             时长
             <Input
+              key={`duration-${timeInputKey}`}
               type="number"
-              step="0.01"
-              value={selectedClip ? selectedClip.duration : 0}
+              step="0.001"
+              defaultValue={formatTimeInput(clipDuration)}
               disabled={!selectedClip}
-              onChange={(event) =>
-                onSelectedClipChange({
-                  duration: Math.max(MIN_CLIP_DURATION, Number(event.target.value) || 0)
-                })
-              }
+              onBlur={(event) => commitTimeField('duration', event.currentTarget.value)}
+              onChange={(event) => updateTimeField('duration', event.target.value)}
             />
           </Field>
           <Field>
             结束
             <Input
+              key={`end-${timeInputKey}`}
               type="number"
-              step="0.01"
-              value={selectedClip ? selectedClip.startTime + selectedClip.duration : 0}
+              step="0.001"
+              defaultValue={formatTimeInput(startTime + clipDuration)}
               disabled={!selectedClip}
-              onChange={(event) => {
-                const nextEnd = Math.max(0, Number(event.target.value) || 0)
-                const startTime = selectedClip?.startTime || 0
-                onSelectedClipChange({
-                  duration: Math.max(MIN_CLIP_DURATION, nextEnd - startTime)
-                })
-              }}
+              onBlur={(event) => commitTimeField('end', event.currentTarget.value)}
+              onChange={(event) => updateTimeField('end', event.target.value)}
             />
           </Field>
         </FieldGrid>
@@ -143,6 +258,66 @@ export function InspectorPanel({ onSelectedClipChange, selectedClip }) {
                 type="checkbox"
                 checked={Boolean(selectedClip?.muted)}
                 onChange={(event) => onSelectedClipChange({ muted: event.target.checked })}
+              />
+            </Field>
+          </FieldGrid>
+        ) : null}
+        {selectedIsVideo ? (
+          <FieldGrid>
+            <Field>
+              进场
+              <Select
+                value={selectedClip?.videoInTransitionType || 'none'}
+                onChange={(event) => updateVideoTransitionType('in', event.target.value)}
+              >
+                {VIDEO_TRANSITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field>
+              进场时长
+              <Input
+                type="number"
+                min="0"
+                max="5"
+                step="0.05"
+                value={selectedClip?.videoInTransitionSeconds ?? DEFAULT_VIDEO_TRANSITION_SECONDS}
+                onChange={(event) =>
+                  onSelectedClipChange({
+                    videoInTransitionSeconds: clamp(Number(event.target.value) || 0, 0, 5)
+                  })
+                }
+              />
+            </Field>
+            <Field>
+              退场
+              <Select
+                value={selectedClip?.videoOutTransitionType || 'none'}
+                onChange={(event) => updateVideoTransitionType('out', event.target.value)}
+              >
+                {VIDEO_TRANSITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field>
+              退场时长
+              <Input
+                type="number"
+                min="0"
+                max="5"
+                step="0.05"
+                value={selectedClip?.videoOutTransitionSeconds ?? DEFAULT_VIDEO_TRANSITION_SECONDS}
+                onChange={(event) =>
+                  onSelectedClipChange({
+                    videoOutTransitionSeconds: clamp(Number(event.target.value) || 0, 0, 5)
+                  })
+                }
               />
             </Field>
           </FieldGrid>
@@ -364,6 +539,12 @@ export function InspectorPanel({ onSelectedClipChange, selectedClip }) {
 }
 
 InspectorPanel.propTypes = {
+  className: PropTypes.string,
+  onSelectedClipCommit: PropTypes.func.isRequired,
   onSelectedClipChange: PropTypes.func.isRequired,
   selectedClip: PropTypes.object
+}
+
+InspectorPanel.defaultProps = {
+  className: ''
 }

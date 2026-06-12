@@ -671,6 +671,19 @@ export function useScreenRecordingController({
   }, [isPlayerWindow, loadRecordings, playerName, resetRecorderState])
 
   /**
+   * 其他窗口完成导出后，主窗口收到“录屏列表已失效”通知并刷新列表。
+   */
+  useEffect(() => {
+    if (isPlayerWindow || typeof window.api?.onScreenRecordingsListInvalidated !== 'function') {
+      return undefined
+    }
+
+    return window.api.onScreenRecordingsListInvalidated(() => {
+      loadRecordings()
+    })
+  }, [isPlayerWindow, loadRecordings])
+
+  /**
    * 当网络恢复时，通知主进程尝试继续处理待完成的云同步会话。
    *
    * 这样用户在离线录制后恢复网络，无需手动点击每一条重试。

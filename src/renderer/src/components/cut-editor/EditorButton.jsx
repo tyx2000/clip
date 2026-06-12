@@ -48,6 +48,7 @@ export function EditorButton({
   return (
     <Button
       type={type}
+      aria-label={title}
       title={title}
       $active={active}
       $primary={primary}
@@ -55,7 +56,7 @@ export function EditorButton({
       disabled={disabled}
       onClick={onClick}
     >
-      {children || <EditorIcon id={icon} />}
+      {children || <EditorIcon id={icon} title={title} />}
     </Button>
   )
 }

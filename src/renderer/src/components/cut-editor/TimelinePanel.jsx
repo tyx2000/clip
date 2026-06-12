@@ -37,21 +37,21 @@ const Timeline = styled.section`
 const TrackViewport = styled.div`
   min-height: 0;
   overflow: auto;
-  scrollbar-color: #3a424f #15191f;
+  scrollbar-color: #242a33 #11161d;
   scrollbar-width: thin;
 
   &::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 7px;
+    height: 7px;
   }
 
   &::-webkit-scrollbar-track {
-    background: #15191f;
+    background: #11161d;
   }
 
   &::-webkit-scrollbar-thumb {
     border-radius: 999px;
-    background: #3a424f;
+    background: #242a33;
   }
 `
 

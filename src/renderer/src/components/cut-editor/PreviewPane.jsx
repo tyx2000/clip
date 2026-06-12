@@ -6,11 +6,13 @@ import { PreviewTextOverlay } from './PreviewTextOverlay'
 
 const PreviewColumn = styled.section`
   min-height: 0;
+  display: grid;
   background: #101318;
 `
 
 const PreviewStage = styled.div`
   min-height: 0;
+  height: 100%;
   display: grid;
   place-items: center;
   padding: 16px;
@@ -40,6 +42,12 @@ const PreviewFrame = styled.div`
   background: #000000;
   overflow: hidden;
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.36);
+`
+
+const VideoViewport = styled.div`
+  width: 100%;
+  height: 100%;
+  transform-origin: center;
 `
 
 const Video = styled.video`
@@ -108,6 +116,7 @@ export function PreviewPane({
   onImageResizeStart,
   onOverlayDragStart,
   onPreviewVideoPointerDown,
+  videoShellRef,
   videoRef,
   visiblePreviewClips
 }) {
@@ -115,14 +124,16 @@ export function PreviewPane({
     <PreviewColumn>
       <PreviewStage>
         <PreviewFrame>
-          <Video
-            ref={videoRef}
-            src={mediaUrl}
-            preload="auto"
-            controls={false}
-            $visible={isPreviewVideoVisible}
-            onPointerDown={onPreviewVideoPointerDown}
-          />
+          <VideoViewport ref={videoShellRef}>
+            <Video
+              ref={videoRef}
+              src={mediaUrl}
+              preload="auto"
+              controls={false}
+              $visible={isPreviewVideoVisible}
+              onPointerDown={onPreviewVideoPointerDown}
+            />
+          </VideoViewport>
           <PreviewOverlayLayer>
             <CenterGuide $axis="x" $visible={centerGuides.x} />
             <CenterGuide $axis="y" $visible={centerGuides.y} />
@@ -158,6 +169,9 @@ PreviewPane.propTypes = {
   onImageResizeStart: PropTypes.func.isRequired,
   onOverlayDragStart: PropTypes.func.isRequired,
   onPreviewVideoPointerDown: PropTypes.func.isRequired,
+  videoShellRef: PropTypes.shape({
+    current: PropTypes.object
+  }).isRequired,
   videoRef: PropTypes.shape({
     current: PropTypes.object
   }).isRequired,

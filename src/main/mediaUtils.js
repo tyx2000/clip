@@ -39,6 +39,8 @@ const MAIN_ENTRY_DIR = dirname(fileURLToPath(import.meta.url))
 const PRELOAD_ENTRY_PATH = join(MAIN_ENTRY_DIR, '../preload/index.js')
 const RENDERER_ENTRY_PATH = join(MAIN_ENTRY_DIR, '../renderer/index.html')
 let resolvedFfmpegPath = ''
+const encoderSupportCache = new Map()
+const DEFAULT_VIDEO_TRANSITION_SECONDS = 0.35
 
 /** 返回录屏输出根目录。 */
 export function getRecordingsDirectoryPath() {
@@ -586,6 +588,49 @@ function createAbortError(message = 'Export cancelled.') {
   return error
 }
 
+async function canUseFfmpegVideoEncoder(encoderName) {
+  if (encoderSupportCache.has(encoderName)) {
+    return encoderSupportCache.get(encoderName)
+  }
+
+  const executablePath = await resolveFfmpegExecutable()
+  const outputPath = join(app.getPath('temp'), `clip-encoder-${encoderName}-${process.pid}.mp4`)
+  const canUse = await new Promise((resolveCallback) => {
+    const child = spawn(
+      executablePath,
+      [
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=black:s=160x90:d=0.1:r=10',
+        '-c:v',
+        encoderName,
+        '-b:v',
+        '300k',
+        '-allow_sw',
+        '1',
+        '-frames:v',
+        '1',
+        outputPath
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore'] }
+    )
+
+    child.on('error', () => resolveCallback(false))
+    child.on('close', (code) => resolveCallback(code === 0))
+  })
+
+  if (existsSync(outputPath)) {
+    await unlink(outputPath).catch(() => {})
+  }
+  encoderSupportCache.set(encoderName, canUse)
+  return canUse
+}
+
 /** 执行一次 ffmpeg 命令，并在失败时抛出带上下文的错误。 */
 export async function runFfmpeg(args, { durationSec = 0, onProgress, signal } = {}) {
   const executablePath = await resolveFfmpegExecutable()
@@ -843,6 +888,123 @@ export async function extractRecordingThumbnails({
   return thumbnails
 }
 
+function getVideoTransitionSeconds(clip, direction) {
+  const type = clip[`${direction}TransitionType`] || 'none'
+  const fallbackSeconds = type === 'none' ? 0 : DEFAULT_VIDEO_TRANSITION_SECONDS
+
+  return Math.min(
+    clampNumber(clip[`${direction}TransitionSeconds`], 0, 5, fallbackSeconds),
+    Math.max(0, clip.duration / 2)
+  )
+}
+
+function getVideoFadeFilters(clip) {
+  const fadeFilters = []
+  const inSeconds = getVideoTransitionSeconds(clip, 'videoIn')
+  const outSeconds = getVideoTransitionSeconds(clip, 'videoOut')
+
+  if (clip.videoInTransitionType === 'fade' && inSeconds > 0) {
+    fadeFilters.push(`fade=t=in:st=0:d=${roundFilterNumber(inSeconds)}:alpha=1`)
+  }
+  if (clip.videoOutTransitionType === 'fade' && outSeconds > 0) {
+    fadeFilters.push(
+      `fade=t=out:st=${roundFilterNumber(Math.max(0, clip.duration - outSeconds))}:d=${roundFilterNumber(
+        outSeconds
+      )}:alpha=1`
+    )
+  }
+
+  return fadeFilters.length ? `,${fadeFilters.join(',')}` : ''
+}
+
+function getSlideOverlayExpression(type, direction, start, duration, end, axis) {
+  const progress =
+    direction === 'in'
+      ? `(t-${roundFilterNumber(start)})/${roundFilterNumber(duration)}`
+      : `(${roundFilterNumber(end)}-t)/${roundFilterNumber(duration)}`
+
+  if (axis === 'x' && type === 'slideLeft') {
+    return direction === 'in' ? `-overlay_w+${progress}*overlay_w` : `-overlay_w*(1-${progress})`
+  }
+  if (axis === 'x' && type === 'slideRight') {
+    return direction === 'in' ? `main_w*(1-${progress})` : `main_w*(1-${progress})`
+  }
+  if (axis === 'y' && type === 'slideUp') {
+    return direction === 'in' ? `-overlay_h+${progress}*overlay_h` : `-overlay_h*(1-${progress})`
+  }
+  if (axis === 'y' && type === 'slideDown') {
+    return direction === 'in' ? `main_h*(1-${progress})` : `main_h*(1-${progress})`
+  }
+
+  return '0'
+}
+
+function applySlideTransitionExpression(baseExpression, clip, axis) {
+  const start = clip.startTime
+  const end = clip.startTime + clip.duration
+  const inSeconds = getVideoTransitionSeconds(clip, 'videoIn')
+  const outSeconds = getVideoTransitionSeconds(clip, 'videoOut')
+  const inType = clip.videoInTransitionType
+  const outType = clip.videoOutTransitionType
+  const axisTypes =
+    axis === 'x' ? new Set(['slideLeft', 'slideRight']) : new Set(['slideUp', 'slideDown'])
+  let expression = baseExpression
+
+  if (axisTypes.has(outType) && outSeconds > 0) {
+    const slideOut = getSlideOverlayExpression(outType, 'out', start, outSeconds, end, axis)
+    expression = `if(gt(t,${roundFilterNumber(end - outSeconds)}),${slideOut},${expression})`
+  }
+  if (axisTypes.has(inType) && inSeconds > 0) {
+    const slideIn = getSlideOverlayExpression(inType, 'in', start, inSeconds, end, axis)
+    expression = `if(lt(t,${roundFilterNumber(start + inSeconds)}),${slideIn},${expression})`
+  }
+
+  return `'${escapeFilterExpression(expression)}'`
+}
+
+async function getRecordingCutEncodeAttempts({ audioLabels, bitrate }) {
+  const bitrateText = bitrate ? String(bitrate) : '4M'
+  const audioArgs = audioLabels.length ? ['-c:a', 'aac', '-b:a', '128k'] : []
+  const commonMp4Args = ['-movflags', '+faststart']
+  const attempts = []
+
+  if (process.platform === 'darwin' && (await canUseFfmpegVideoEncoder('h264_videotoolbox'))) {
+    attempts.push({
+      args: [
+        '-c:v',
+        'h264_videotoolbox',
+        '-b:v',
+        bitrateText,
+        '-allow_sw',
+        '1',
+        '-tag:v',
+        'avc1',
+        ...audioArgs,
+        ...commonMp4Args
+      ],
+      name: 'h264_videotoolbox'
+    })
+  }
+
+  attempts.push({
+    args: [
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-b:v',
+      bitrateText,
+      '-pix_fmt',
+      'yuv420p',
+      ...audioArgs,
+      ...commonMp4Args
+    ],
+    name: 'libx264'
+  })
+
+  return attempts
+}
+
 /** 使用 ffmpeg 按剪辑时间线导出录屏视频。 */
 export async function exportRecordingCut({
   filePath,
@@ -867,6 +1029,8 @@ export async function exportRecordingCut({
       const startTime = Math.max(0, Number(clip?.startTime) || 0)
       const sourceStart = Math.max(0, Number(clip?.sourceStart) || 0)
       const duration = Math.max(0, Number(clip?.duration) || 0)
+      const videoInTransitionType = String(clip?.videoInTransitionType || 'none')
+      const videoOutTransitionType = String(clip?.videoOutTransitionType || 'none')
       return {
         align: String(clip?.align || 'center'),
         backgroundAlpha: clampNumber(clip?.backgroundAlpha, 0, 1, 0.58),
@@ -893,6 +1057,20 @@ export async function exportRecordingCut({
         strokeWidth: clampNumber(clip?.strokeWidth, 0, 40, 0),
         transitionSeconds: clampNumber(clip?.transitionSeconds, 0, 5, 0),
         transitionType: String(clip?.transitionType || 'none'),
+        videoInTransitionSeconds: clampNumber(
+          clip?.videoInTransitionSeconds,
+          0,
+          5,
+          videoInTransitionType === 'none' ? 0 : DEFAULT_VIDEO_TRANSITION_SECONDS
+        ),
+        videoInTransitionType,
+        videoOutTransitionSeconds: clampNumber(
+          clip?.videoOutTransitionSeconds,
+          0,
+          5,
+          videoOutTransitionType === 'none' ? 0 : DEFAULT_VIDEO_TRANSITION_SECONDS
+        ),
+        videoOutTransitionType,
         volume: clampNumber(clip?.volume, 0, 2, 1),
         x: clampNumber(clip?.x, 0, 100, 50),
         y: clampNumber(clip?.y, 0, 100, kind === 'text' ? 84 : 50)
@@ -922,7 +1100,7 @@ export async function exportRecordingCut({
   const height = makeEvenDimension(output?.height, primaryDetails.height || 720)
   const bitrate = Math.max(300_000, Math.min(30_000_000, Math.trunc(Number(output?.bitrate) || 0)))
   const fps = Math.max(1, Math.min(60, Math.trunc(Number(output?.fps) || 30)))
-  const outputFilePath = join(getRecordingsDirectoryPath(), createRecordingCutFileName('webm'))
+  const outputFilePath = join(getRecordingsDirectoryPath(), createRecordingCutFileName('mp4'))
   const inputSources = []
   const inputSourceMap = new Map()
 
@@ -955,6 +1133,12 @@ export async function exportRecordingCut({
     ...clip,
     inputSource: addInputSource('image', clip.sourcePath)
   }))
+  for (const clip of imageClips) {
+    clip.inputSource.loopDuration = Math.max(
+      Number(clip.inputSource.loopDuration || 0),
+      Number(clip.duration || 0)
+    )
+  }
 
   await Promise.all(
     inputSources.map(async (source) => {
@@ -967,7 +1151,14 @@ export async function exportRecordingCut({
 
   const inputArgs = inputSources.flatMap((source) =>
     source.role === 'image'
-      ? ['-loop', '1', '-t', String(roundFilterNumber(timelineDuration)), '-i', source.sourcePath]
+      ? [
+          '-loop',
+          '1',
+          '-t',
+          String(roundFilterNumber(source.loopDuration || timelineDuration)),
+          '-i',
+          source.sourcePath
+        ]
       : ['-i', source.sourcePath]
   )
   const filters = [
@@ -983,11 +1174,14 @@ export async function exportRecordingCut({
     const inputIndex = clip.inputSource.index
     const clipLabel = `vclip${index}`
     const nextChain = `vbase${index + 1}`
+    const fadeFilters = getVideoFadeFilters(clip)
+    const overlayX = applySlideTransitionExpression('0', clip, 'x')
+    const overlayY = applySlideTransitionExpression('0', clip, 'y')
     filters.push(
-      `[${inputIndex}:v]trim=start=${sourceStart}:duration=${duration},setpts=PTS-STARTPTS+${start}/TB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuva420p[${clipLabel}]`
+      `[${inputIndex}:v]trim=start=${sourceStart}:duration=${duration},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=rgba${fadeFilters},setpts=PTS-STARTPTS+${start}/TB[${clipLabel}]`
     )
     filters.push(
-      `[${videoChain}][${clipLabel}]overlay=x=0:y=0:eof_action=pass:repeatlast=0:shortest=0[${nextChain}]`
+      `[${videoChain}][${clipLabel}]overlay=x=${overlayX}:y=${overlayY}:eof_action=pass:repeatlast=0:shortest=0[${nextChain}]`
     )
     videoChain = nextChain
     videoChainIndex = index + 1
@@ -1097,36 +1291,53 @@ export async function exportRecordingCut({
   }
 
   const filterComplex = filters.join(';')
+  const baseFfmpegArgs = [
+    '-y',
+    '-hide_banner',
+    ...inputArgs,
+    '-filter_complex',
+    filterComplex,
+    '-map',
+    '[outv]',
+    ...(audioLabels.length ? ['-map', '[aout]'] : ['-an'])
+  ]
+  const encodeAttempts = await getRecordingCutEncodeAttempts({ audioLabels, bitrate })
 
   await mkdir(dirname(outputFilePath), { recursive: true })
   try {
-    await runFfmpeg(
-      [
-        '-y',
-        '-hide_banner',
-        ...inputArgs,
-        '-filter_complex',
-        filterComplex,
-        '-map',
-        '[outv]',
-        ...(audioLabels.length ? ['-map', '[aout]'] : ['-an']),
-        '-c:v',
-        'libvpx-vp9',
-        '-b:v',
-        bitrate ? String(bitrate) : '4M',
-        '-row-mt',
-        '1',
-        '-deadline',
-        'realtime',
-        '-cpu-used',
-        '4',
-        ...(audioLabels.length ? ['-c:a', 'libopus', '-b:a', '128k'] : []),
-        '-t',
-        String(roundFilterNumber(timelineDuration)),
-        outputFilePath
-      ],
-      { durationSec: timelineDuration, onProgress, signal }
-    )
+    let lastError = null
+    for (const [index, attempt] of encodeAttempts.entries()) {
+      try {
+        await runFfmpeg(
+          [
+            ...baseFfmpegArgs,
+            ...attempt.args,
+            '-t',
+            String(roundFilterNumber(timelineDuration)),
+            outputFilePath
+          ],
+          { durationSec: timelineDuration, onProgress, signal }
+        )
+        lastError = null
+        break
+      } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') {
+          throw error
+        }
+
+        lastError = error
+        if (existsSync(outputFilePath)) {
+          await unlink(outputFilePath).catch(() => {})
+        }
+        if (index === encodeAttempts.length - 1) {
+          throw lastError
+        }
+        console.warn(
+          `[recording] cut export encoder ${attempt.name} failed, retrying with ${encodeAttempts[index + 1].name}:`,
+          error instanceof Error ? error.message : error
+        )
+      }
+    }
   } catch (error) {
     if (signal?.aborted && existsSync(outputFilePath)) {
       await unlink(outputFilePath).catch(() => {})

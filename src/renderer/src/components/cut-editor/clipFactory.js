@@ -1,4 +1,9 @@
-import { DEFAULT_TRANSITION, MIN_CLIP_DURATION, TEXT_DEFAULTS } from './constants'
+import {
+  DEFAULT_TRANSITION,
+  DEFAULT_VIDEO_TRANSITION_SECONDS,
+  MIN_CLIP_DURATION,
+  TEXT_DEFAULTS
+} from './constants'
 import { clamp, createId, getAvailableTrackId, getKindEnd, roundTime } from './timelineModel'
 
 export function createToolClip({ clips, duration, kind, time }) {
@@ -20,6 +25,10 @@ export function createToolClip({ clips, duration, kind, time }) {
     trackId: getAvailableTrackId(clips, kind, startTime, safeDuration),
     transitionSeconds: 0.25,
     transitionType: DEFAULT_TRANSITION,
+    videoInTransitionSeconds: kind === 'video' ? DEFAULT_VIDEO_TRANSITION_SECONDS : undefined,
+    videoInTransitionType: kind === 'video' ? 'none' : undefined,
+    videoOutTransitionSeconds: kind === 'video' ? DEFAULT_VIDEO_TRANSITION_SECONDS : undefined,
+    videoOutTransitionType: kind === 'video' ? 'none' : undefined,
     volume: 1,
     x: 50,
     y: kind === 'text' ? 84 : 50,
@@ -104,6 +113,10 @@ export function createImportedVideoClip({
     startTime,
     thumbnails,
     trackId: getAvailableTrackId(clips, 'video', startTime, safeDuration),
+    videoInTransitionSeconds: DEFAULT_VIDEO_TRANSITION_SECONDS,
+    videoInTransitionType: 'none',
+    videoOutTransitionSeconds: DEFAULT_VIDEO_TRANSITION_SECONDS,
+    videoOutTransitionType: 'none',
     volume: 1
   }
 }

@@ -42,6 +42,13 @@ function parseDataUrl(dataUrl = '') {
 
 // SQLite 连接做成模块级单例，避免每次查询都重新打开数据库句柄。
 let recordingMetadataDb = null
+const RECORDING_CUT_FILE_PREFIX = 'cut-'
+
+function isKnownRecordingOutputFileName(fileName) {
+  return (
+    fileName.startsWith(RECORDING_FILE_PREFIX) || fileName.startsWith(RECORDING_CUT_FILE_PREFIX)
+  )
+}
 
 function ensureRecordingsSourceColumn(db) {
   const columns = db.prepare('PRAGMA table_info(recordings)').all()
@@ -862,7 +869,7 @@ export async function buildRecordingItem(filePath, fileStat) {
   const source =
     metadata?.source && typeof metadata.source === 'object'
       ? metadata.source
-      : fileName.startsWith('cut-')
+      : fileName.startsWith(RECORDING_CUT_FILE_PREFIX)
         ? { type: 'editor-cut' }
         : { type: 'recording' }
 
@@ -908,7 +915,7 @@ export async function listRecordingItems() {
   const items = []
 
   for (const fileName of fileNames) {
-    if (!fileName.startsWith(RECORDING_FILE_PREFIX)) {
+    if (!isKnownRecordingOutputFileName(fileName)) {
       continue
     }
 

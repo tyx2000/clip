@@ -34,7 +34,7 @@ const ClipFrame = styled.div`
   transition: ${({ $dragging }) =>
     $dragging
       ? 'border-color 120ms ease, opacity 120ms ease'
-      : 'left 160ms ease, width 160ms ease, border-color 120ms ease, opacity 120ms ease'};
+      : 'width 160ms ease, border-color 120ms ease, opacity 120ms ease'};
 `
 
 const ClipThumbs = styled.div`

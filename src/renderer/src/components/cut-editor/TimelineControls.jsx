@@ -140,12 +140,25 @@ const VolumeColumn = styled.div`
   gap: 8px;
 `
 
-const VolumeRange = styled.input`
-  width: 28px;
-  height: 92px;
-  writing-mode: vertical-rl;
-  direction: rtl;
-  accent-color: #4b9cff;
+const VolumeBar = styled.div`
+  position: relative;
+  width: 18px;
+  height: 96px;
+  overflow: hidden;
+  border: 1px solid #303743;
+  border-radius: 999px;
+  background: #10151c;
+  cursor: ns-resize;
+  touch-action: none;
+`
+
+const VolumeFill = styled.div`
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: ${({ $value }) => `${Math.round($value * 100)}%`};
+  background: linear-gradient(180deg, #67b7ff 0%, #2f7df6 100%);
 `
 
 export function TimelineControls({
@@ -171,6 +184,31 @@ export function TimelineControls({
 }) {
   const zoomOut = () => onZoomChange(Math.max(TIMELINE_ZOOM_MIN, zoom - 5))
   const zoomIn = () => onZoomChange(Math.min(TIMELINE_ZOOM_MAX, zoom + 5))
+  const updateVolumeFromPointer = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!rect.height) {
+      return
+    }
+
+    const rawValue = 1 - (event.clientY - rect.top) / rect.height
+    const nextVolume = Math.min(Math.max(rawValue, 0), 1)
+    onVolumeChange(Math.round(nextVolume * 100) / 100)
+  }
+  const handleVolumePointerDown = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    updateVolumeFromPointer(event)
+  }
+  const handleVolumePointerMove = (event) => {
+    if (event.buttons !== 1) {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    updateVolumeFromPointer(event)
+  }
 
   return (
     <TimelineTop>
@@ -210,7 +248,7 @@ export function TimelineControls({
       <TimelinePreviewActions>
         <HoverControl>
           <EditorButton icon="speed" title="倍速" onClick={() => {}} />
-          <Popover>
+          <Popover onPointerDown={(event) => event.stopPropagation()}>
             <PopoverTitle>倍速</PopoverTitle>
             <SpeedOptions>
               {SPEED_OPTIONS.map((option) => (
@@ -218,6 +256,7 @@ export function TimelineControls({
                   key={option}
                   type="button"
                   $active={option === playbackRate}
+                  onPointerDown={(event) => event.stopPropagation()}
                   onClick={() => onPlaybackRateChange(option)}
                 >
                   {option}x
@@ -228,17 +267,20 @@ export function TimelineControls({
         </HoverControl>
         <HoverControl>
           <EditorButton icon="volume" title="音量" onClick={() => {}} />
-          <Popover $narrow>
+          <Popover $narrow onPointerDown={(event) => event.stopPropagation()}>
             <PopoverTitle>音量</PopoverTitle>
             <VolumeColumn>
-              <VolumeRange
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={volume}
-                onChange={(event) => onVolumeChange(Number(event.target.value))}
-              />
+              <VolumeBar
+                role="slider"
+                aria-label="音量"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(volume * 100)}
+                onPointerDown={handleVolumePointerDown}
+                onPointerMove={handleVolumePointerMove}
+              >
+                <VolumeFill $value={volume} />
+              </VolumeBar>
               <PopoverValue>{Math.round(volume * 100)}%</PopoverValue>
             </VolumeColumn>
           </Popover>

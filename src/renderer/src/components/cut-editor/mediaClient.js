@@ -60,6 +60,10 @@ export function serializeClipForExport(clip, fallbackVideoPath) {
     strokeWidth: clip.strokeWidth,
     transitionSeconds: clip.transitionSeconds,
     transitionType: clip.transitionType,
+    videoInTransitionSeconds: clip.videoInTransitionSeconds,
+    videoInTransitionType: clip.videoInTransitionType,
+    videoOutTransitionSeconds: clip.videoOutTransitionSeconds,
+    videoOutTransitionType: clip.videoOutTransitionType,
     volume: clip.volume,
     x: clip.x,
     y: clip.y
