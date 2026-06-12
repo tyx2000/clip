@@ -204,18 +204,18 @@ function closeRoom(room, message = 'Host left the meeting. Room closed.') {
   broadcastRoomList()
 }
 
-function broadcastChatMessage(room, messagePayload) {
+function broadcastChatMessage(room, messagePayload, excludedPeerId = '') {
   const payload = {
     type: MEETING_SIGNAL_TYPES.CHAT_MESSAGE,
     message: messagePayload
   }
 
-  if (room.host.socket) {
+  if (room.host.peerId !== excludedPeerId && room.host.socket) {
     sendJson(room.host.socket, payload)
   }
 
   for (const viewer of room.viewers.values()) {
-    if (viewer.socket) {
+    if (viewer.peerId !== excludedPeerId && viewer.socket) {
       sendJson(viewer.socket, payload)
     }
   }
@@ -800,7 +800,7 @@ function startScreenShareServer() {
           requestId,
           message: chatMessage
         })
-        broadcastChatMessage(room, chatMessage)
+        broadcastChatMessage(room, chatMessage, socketState.peerId)
         return
       }
 

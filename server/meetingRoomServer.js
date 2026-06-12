@@ -101,12 +101,12 @@ function createMeetingRoomServer({
 
     return {
       ok: true,
+      ...summarizeRoom(room),
       roomId,
       role: 'host',
       peerId: 'host',
       token: hostToken,
-      wsUrl: `${getWsOrigin(req)}/ws`,
-      ...summarizeRoom(room)
+      wsUrl: `${getWsOrigin(req)}/ws`
     }
   }
 
@@ -133,12 +133,12 @@ function createMeetingRoomServer({
 
     return {
       ok: true,
+      ...summarizeRoom(room),
       roomId,
       role: 'viewer',
       peerId,
       token,
-      wsUrl: `${getWsOrigin(req)}/ws`,
-      ...summarizeRoom(room)
+      wsUrl: `${getWsOrigin(req)}/ws`
     }
   }
 
