@@ -239,8 +239,15 @@ export function sendScreenShareMeetingMessage(webContentsId, payload) {
     return { ok: false, message: '会议连接未建立。' }
   }
 
-  state.socket.send(JSON.stringify(payload || {}))
-  return { ok: true }
+  try {
+    state.socket.send(JSON.stringify(payload || {}))
+    return { ok: true }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : '会议消息发送失败。'
+    }
+  }
 }
 
 export function disconnectScreenShareMeetingSocket(

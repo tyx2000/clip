@@ -23,6 +23,24 @@ import { removeMeetingRoom } from '../utils/meetingRoomsStorage'
 // 2. 主进程通过 IPC 转发会议信令 WS 事件，这里消费事件并驱动 RTC 状态机。
 // 3. 共享源列表、popover 开关这类 UI 状态不在这里，留给外层 controller。
 const MAX_RECONNECT_ATTEMPTS = 6
+const CHAT_SEND_TIMEOUT_MS = 8_000
+
+function createRequestId(prefix = 'meeting-request-') {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}${crypto.randomUUID()}`
+  }
+  return `${prefix}${Math.random().toString(16).slice(2, 10)}`
+}
+
+function createDeferred() {
+  let resolve = null
+  let reject = null
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
+}
 
 export function useMeetingRtcSession({
   isMeetingWindow,
@@ -68,6 +86,12 @@ export function useMeetingRtcSession({
   const initialSessionConsumedRef = useRef(false)
   const meetingSocketConnectedRef = useRef(false)
   const pendingSocketConnectRef = useRef(null)
+  const pendingChatRequestsRef = useRef(new Map())
+  const localAudioProducerRef = useRef(null)
+  const localScreenProducerRef = useRef(null)
+  const remoteConsumersRef = useRef(new Map())
+  const remoteAudioElementsRef = useRef(new Map())
+  const remoteScreenProducerIdRef = useRef('')
 
   const isJoined = roomState === 'joined' && Boolean(roomInfo?.roomId)
   const isSharing = shareState === 'sharing'
@@ -155,6 +179,56 @@ export function useMeetingRtcSession({
     Promise.resolve(sender(payload)).catch(() => {})
     return true
   }, [])
+
+  const sendSocketMessageWithResult = useCallback(async (payload) => {
+    if (!meetingSocketConnectedRef.current) {
+      return false
+    }
+
+    const sender = window.api?.sendScreenShareMeetingMessage
+    if (typeof sender !== 'function') {
+      return false
+    }
+
+    const result = await sender(payload).catch(() => ({ ok: false }))
+    return Boolean(result?.ok)
+  }, [])
+
+  const sendChatMessageWithAck = useCallback(
+    async (payload) => {
+      if (!meetingSocketConnectedRef.current) {
+        return { ok: false, message: '会议连接尚未恢复。' }
+      }
+
+      const requestId = createRequestId('chat-message-')
+      const deferred = createDeferred()
+      deferred.timer = window.setTimeout(() => {
+        pendingChatRequestsRef.current.delete(requestId)
+        deferred.reject(new Error('消息发送超时。'))
+      }, CHAT_SEND_TIMEOUT_MS)
+      pendingChatRequestsRef.current.set(requestId, deferred)
+      const sent = await sendSocketMessageWithResult({
+        ...payload,
+        requestId
+      })
+      if (!sent) {
+        pendingChatRequestsRef.current.delete(requestId)
+        window.clearTimeout(deferred.timer)
+        return { ok: false, message: '会议连接未建立。' }
+      }
+
+      try {
+        const message = await deferred.promise
+        return { ok: true, message }
+      } catch (error) {
+        return {
+          ok: false,
+          message: error instanceof Error ? error.message : '消息发送失败。'
+        }
+      }
+    },
+    [sendSocketMessageWithResult]
+  )
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -258,24 +332,135 @@ export function useMeetingRtcSession({
     }
   }, [cleanupRemoteAudio])
 
+  const closeLocalAudioProducer = useCallback(() => {
+    if (!localAudioProducerRef.current) {
+      return
+    }
+
+    meetingSfuClient.closeProducer(sendSocketMessage, localAudioProducerRef.current)
+    localAudioProducerRef.current = null
+  }, [meetingSfuClient, sendSocketMessage])
+
+  const closeLocalScreenProducer = useCallback(() => {
+    if (!localScreenProducerRef.current) {
+      return
+    }
+
+    meetingSfuClient.closeProducer(sendSocketMessage, localScreenProducerRef.current)
+    localScreenProducerRef.current = null
+  }, [meetingSfuClient, sendSocketMessage])
+
+  const cleanupRemoteConsumer = useCallback(
+    (producerId) => {
+      const normalizedProducerId = String(producerId || '')
+      if (!normalizedProducerId) {
+        return
+      }
+
+      const consumer = remoteConsumersRef.current.get(normalizedProducerId)
+      if (consumer) {
+        meetingSfuClient.closeConsumer(consumer)
+        remoteConsumersRef.current.delete(normalizedProducerId)
+      }
+
+      const audio = remoteAudioElementsRef.current.get(normalizedProducerId)
+      if (audio) {
+        audio.pause()
+        audio.srcObject = null
+        remoteAudioElementsRef.current.delete(normalizedProducerId)
+      }
+
+      if (remoteScreenProducerIdRef.current === normalizedProducerId) {
+        remoteScreenProducerIdRef.current = ''
+        syncRemotePreview(null)
+      }
+    },
+    [meetingSfuClient, syncRemotePreview]
+  )
+
+  const cleanupAllRemoteConsumers = useCallback(() => {
+    for (const producerId of remoteConsumersRef.current.keys()) {
+      cleanupRemoteConsumer(producerId)
+    }
+    remoteConsumersRef.current.clear()
+    remoteAudioElementsRef.current.clear()
+    remoteScreenProducerIdRef.current = ''
+  }, [cleanupRemoteConsumer])
+
+  const attachRemoteConsumer = useCallback(
+    (consumer, producerInfo = {}) => {
+      const producerId = consumer?.producerId || producerInfo.producerId || ''
+      if (!producerId || !consumer?.track) {
+        return
+      }
+
+      remoteConsumersRef.current.set(producerId, consumer)
+      const source = producerInfo.appData?.source || consumer.appData?.source || ''
+      const cleanup = () => cleanupRemoteConsumer(producerId)
+      consumer.track.addEventListener('ended', cleanup, { once: true })
+      consumer.on?.('transportclose', cleanup)
+      consumer.on?.('producerclose', cleanup)
+
+      if (consumer.kind === 'video' || source === 'screen') {
+        remoteScreenProducerIdRef.current = producerId
+        syncRemotePreview(new MediaStream([consumer.track]))
+        setShareState('sharing')
+        return
+      }
+
+      if (consumer.kind === 'audio') {
+        const audio = remoteAudioElementsRef.current.get(producerId) || new Audio()
+        audio.autoplay = true
+        audio.srcObject = new MediaStream([consumer.track])
+        audio.play().catch(() => {})
+        remoteAudioElementsRef.current.set(producerId, audio)
+      }
+    },
+    [cleanupRemoteConsumer, syncRemotePreview]
+  )
+
+  const consumeRemoteProducer = useCallback(
+    async (producerInfo = {}) => {
+      const producerId = producerInfo.producerId || ''
+      if (!producerId || remoteConsumersRef.current.has(producerId)) {
+        return
+      }
+
+      const localPeerId = sessionRef.current.peerId || currentPeerId
+      if (producerInfo.peerId && producerInfo.peerId === localPeerId) {
+        return
+      }
+
+      try {
+        const consumer = await meetingSfuClient.consumeProducer(sendSocketMessage, producerInfo)
+        attachRemoteConsumer(consumer, producerInfo)
+      } catch (error) {
+        setStatusMessage(`接收媒体失败：${error instanceof Error ? error.message : '未知错误。'}`)
+      }
+    },
+    [attachRemoteConsumer, currentPeerId, meetingSfuClient, sendSocketMessage]
+  )
+
   const stopDisplayStream = useCallback(() => {
     if (!displayStreamRef.current) {
       return
     }
+    closeLocalScreenProducer()
     displayStreamRef.current.getTracks().forEach((track) => track.stop())
     displayStreamRef.current = null
     syncLocalPreview()
-  }, [syncLocalPreview])
+  }, [closeLocalScreenProducer, syncLocalPreview])
 
   const stopMicrophoneStream = useCallback(() => {
     if (!microphoneStreamRef.current) {
       return
     }
+    closeLocalAudioProducer()
     microphoneStreamRef.current.getTracks().forEach((track) => track.stop())
     microphoneStreamRef.current = null
     setMicrophoneEnabled(false)
     setMicrophoneState('idle')
-  }, [])
+  }, [closeLocalAudioProducer])
 
   const closeHostPeerConnections = useCallback(() => {
     for (const [peerId, peerConnection] of hostPeerConnectionsRef.current.entries()) {
@@ -307,6 +492,44 @@ export function useMeetingRtcSession({
     },
     [getAudioTracks]
   )
+
+  const publishLocalAudioIfReady = useCallback(async () => {
+    if (!meetingSfuClient.isInitialized || localAudioProducerRef.current) {
+      return false
+    }
+
+    const [track] = microphoneStreamRef.current?.getAudioTracks() || []
+    if (!track || !track.enabled) {
+      return false
+    }
+
+    const { producer } = await meetingSfuClient.publishAudio(sendSocketMessage, track, {
+      stream: microphoneStreamRef.current,
+      source: 'microphone',
+      peerId: sessionRef.current.peerId || currentPeerId
+    })
+    localAudioProducerRef.current = producer
+    return true
+  }, [currentPeerId, meetingSfuClient, sendSocketMessage])
+
+  const publishLocalScreenIfReady = useCallback(async () => {
+    if (!meetingSfuClient.isInitialized || localScreenProducerRef.current) {
+      return false
+    }
+
+    const [track] = displayStreamRef.current?.getVideoTracks() || []
+    if (!track) {
+      return false
+    }
+
+    const { producer } = await meetingSfuClient.publishScreen(sendSocketMessage, track, {
+      stream: displayStreamRef.current,
+      source: 'screen',
+      peerId: sessionRef.current.peerId || currentPeerId
+    })
+    localScreenProducerRef.current = producer
+    return true
+  }, [currentPeerId, meetingSfuClient, sendSocketMessage])
 
   const updateRoomInfo = useCallback(
     (room, options = {}) => {
@@ -359,6 +582,7 @@ export function useMeetingRtcSession({
     closeHostPeerConnections()
     closeViewerPeerConnection()
     cleanupAllRemoteAudio()
+    cleanupAllRemoteConsumers()
     stopDisplayStream()
     stopMicrophoneStream()
     viewerPeerIdsRef.current = new Set()
@@ -366,6 +590,11 @@ export function useMeetingRtcSession({
     viewerChatChannelRef.current = null
     deliveredChatMessageIdsRef.current.clear()
     incomingChatTransfersRef.current.clear()
+    pendingChatRequestsRef.current.forEach((deferred) => {
+      window.clearTimeout(deferred.timer)
+      deferred.reject(new Error('会议连接已关闭。'))
+    })
+    pendingChatRequestsRef.current.clear()
     reconnectAttemptsRef.current = 0
     meetingSocketConnectedRef.current = false
     pendingSocketConnectRef.current = null
@@ -390,6 +619,7 @@ export function useMeetingRtcSession({
     setRemotePreviewStream(null)
   }, [
     cleanupAllRemoteAudio,
+    cleanupAllRemoteConsumers,
     clearReconnectTimer,
     closeHostPeerConnections,
     closeViewerPeerConnection,
@@ -424,18 +654,18 @@ export function useMeetingRtcSession({
         return false
       }
 
-      const sent = sendSocketMessage({
+      const result = await sendChatMessageWithAck({
         type: 'chat-message',
         kind: 'text',
         text: nextText
       })
-      if (!sent) {
-        setStatusMessage('会议连接尚未恢复，暂时无法发送消息。')
+      if (!result.ok) {
+        setStatusMessage(result.message || '消息发送失败。')
       }
 
-      return sent
+      return result.ok
     },
-    [canLeaveMeeting, sendSocketMessage]
+    [canLeaveMeeting, sendChatMessageWithAck]
   )
 
   const sendChatImage = useCallback(
@@ -473,18 +703,18 @@ export function useMeetingRtcSession({
         return false
       }
 
-      const sent = sendSocketMessage({
+      const result = await sendChatMessageWithAck({
         type: 'chat-message',
         kind: 'image',
         imageDataUrl
       })
-      if (!sent) {
-        setStatusMessage('会议连接尚未恢复，暂时无法发送图片。')
+      if (!result.ok) {
+        setStatusMessage(result.message || '图片发送失败。')
       }
 
-      return sent
+      return result.ok
     },
-    [canLeaveMeeting, sendSocketMessage]
+    [canLeaveMeeting, sendChatMessageWithAck]
   )
 
   const buildHostPeerConnection = useCallback(
@@ -625,6 +855,9 @@ export function useMeetingRtcSession({
         setMicrophoneEnabled(true)
         setMicrophoneState('active')
         announceAudioState(true)
+        if (connectionState === 'connected') {
+          await publishLocalAudioIfReady().catch(() => false)
+        }
         return microphoneStreamRef.current
       }
 
@@ -635,7 +868,7 @@ export function useMeetingRtcSession({
       setMicrophoneState('requesting')
       const request = window.navigator.mediaDevices
         .getUserMedia({ audio: true, video: false })
-        .then((stream) => {
+        .then(async (stream) => {
           microphoneStreamRef.current = stream
           stream.getAudioTracks().forEach((track) => {
             track.enabled = true
@@ -643,6 +876,9 @@ export function useMeetingRtcSession({
           setMicrophoneEnabled(true)
           setMicrophoneState('active')
           announceAudioState(true)
+          if (connectionState === 'connected') {
+            await publishLocalAudioIfReady().catch(() => false)
+          }
           if (!silent) {
             setStatusMessage((previous) => {
               if (previous.includes('会议')) {
@@ -674,7 +910,7 @@ export function useMeetingRtcSession({
       microphoneRequestInFlightRef.current = request
       return await request
     },
-    [announceAudioState]
+    [announceAudioState, connectionState, publishLocalAudioIfReady]
   )
 
   const toggleMicrophone = useCallback(async () => {
@@ -686,32 +922,34 @@ export function useMeetingRtcSession({
       }
 
       if (isJoined && connectionState === 'connected') {
-        if (isHost) {
+        const published = await publishLocalAudioIfReady().catch(() => false)
+        if (!published && isHost) {
           await rebuildHostPeerConnections()
-        } else if (isViewer) {
+        } else if (!published && isViewer) {
           sendSocketMessage({ type: 'renegotiate-request', targetPeerId: 'host' })
         }
       }
       return
     }
 
-    const nextEnabled = !hasEnabledTrack(microphoneStreamRef.current)
-    microphoneStreamRef.current.getAudioTracks().forEach((track) => {
-      track.enabled = nextEnabled
-    })
-    setMicrophoneEnabled(nextEnabled)
-    setMicrophoneState(nextEnabled ? 'active' : 'muted')
-    announceAudioState(nextEnabled)
-    setStatusMessage(nextEnabled ? '麦克风已开启。' : '麦克风已关闭。')
+    closeLocalAudioProducer()
+    stopMicrophoneStream()
+    announceAudioState(false)
+    setMicrophoneEnabled(false)
+    setMicrophoneState('idle')
+    setStatusMessage('麦克风已关闭，并已停止占用系统麦克风。')
   }, [
     announceAudioState,
+    closeLocalAudioProducer,
     connectionState,
     ensureMicrophoneStream,
     isHost,
     isJoined,
     isViewer,
+    publishLocalAudioIfReady,
     rebuildHostPeerConnections,
-    sendSocketMessage
+    sendSocketMessage,
+    stopMicrophoneStream
   ])
 
   const handleRoomSnapshotMessage = useCallback(
@@ -760,6 +998,66 @@ export function useMeetingRtcSession({
     [appendChatMessage]
   )
 
+  const handleChatMessageAck = useCallback(
+    async (message) => {
+      const requestId = String(message.requestId || '')
+      const deferred = pendingChatRequestsRef.current.get(requestId)
+      if (!deferred) {
+        return
+      }
+
+      pendingChatRequestsRef.current.delete(requestId)
+      window.clearTimeout(deferred.timer)
+      if (message.message) {
+        appendChatMessage(message.message)
+      }
+      deferred.resolve(message.message || null)
+    },
+    [appendChatMessage]
+  )
+
+  const handleErrorMessage = useCallback(async (message) => {
+    const requestId = String(message.requestId || '')
+    if (!requestId) {
+      return
+    }
+
+    const deferred = pendingChatRequestsRef.current.get(requestId)
+    if (!deferred) {
+      return
+    }
+
+    pendingChatRequestsRef.current.delete(requestId)
+    window.clearTimeout(deferred.timer)
+    deferred.reject(new Error(message.message || '请求失败。'))
+  }, [])
+
+  const handleMediaStateMessage = useCallback(
+    async (message) => {
+      const producers = Array.isArray(message.producers) ? message.producers : []
+      for (const producer of producers) {
+        await consumeRemoteProducer(producer)
+      }
+    },
+    [consumeRemoteProducer]
+  )
+
+  const handleNewProducerMessage = useCallback(
+    async (message) => {
+      if (message.producer) {
+        await consumeRemoteProducer(message.producer)
+      }
+    },
+    [consumeRemoteProducer]
+  )
+
+  const handleProducerClosedMessage = useCallback(
+    async (message) => {
+      cleanupRemoteConsumer(message.producerId)
+    },
+    [cleanupRemoteConsumer]
+  )
+
   const handleRouterRtpCapabilitiesMessage = useCallback(
     async (message) => {
       if (!message?.rtpCapabilities) {
@@ -770,21 +1068,34 @@ export function useMeetingRtcSession({
         await meetingSfuClient.initializeDevice(message.rtpCapabilities)
         await meetingSfuClient.ensureSendTransport(sendSocketMessage)
         await meetingSfuClient.ensureRecvTransport(sendSocketMessage)
+        await publishLocalAudioIfReady().catch(() => false)
+        await publishLocalScreenIfReady().catch(() => false)
+        sendSocketMessage({ type: 'media-state' })
       } catch (error) {
         setStatusMessage(
           `SFU 能力初始化失败：${error instanceof Error ? error.message : '未知错误。'}`
         )
       }
     },
-    [meetingSfuClient, sendSocketMessage, setStatusMessage]
+    [
+      meetingSfuClient,
+      publishLocalAudioIfReady,
+      publishLocalScreenIfReady,
+      sendSocketMessage,
+      setStatusMessage
+    ]
   )
 
   const handlePeerJoinMessage = useCallback(
     async (message) => {
       viewerPeerIdsRef.current.add(message.peerId)
+      if (meetingSfuClient.isInitialized) {
+        sendSocketMessage({ type: 'media-state' })
+        return
+      }
       await buildHostPeerConnection(message.peerId)
     },
-    [buildHostPeerConnection]
+    [buildHostPeerConnection, meetingSfuClient.isInitialized, sendSocketMessage]
   )
 
   const handlePeerLeaveMessage = useCallback(
@@ -795,9 +1106,14 @@ export function useMeetingRtcSession({
         peerConnection.close()
         hostPeerConnectionsRef.current.delete(message.peerId)
       }
+      for (const [producerId, consumer] of remoteConsumersRef.current.entries()) {
+        if (consumer.appData?.producerPeerId === message.peerId) {
+          cleanupRemoteConsumer(producerId)
+        }
+      }
       cleanupRemoteAudio(message.peerId)
     },
-    [cleanupRemoteAudio]
+    [cleanupRemoteAudio, cleanupRemoteConsumer]
   )
 
   const handleShareStartedMessage = useCallback(async () => {
@@ -809,10 +1125,13 @@ export function useMeetingRtcSession({
 
   const handleShareStoppedMessage = useCallback(async () => {
     if (sessionRef.current.role === 'viewer') {
+      if (remoteScreenProducerIdRef.current) {
+        cleanupRemoteConsumer(remoteScreenProducerIdRef.current)
+      }
       setShareState('idle')
       setStatusMessage('主持人已停止桌面共享，语音通话继续。')
     }
-  }, [])
+  }, [cleanupRemoteConsumer])
 
   const handleRenegotiateRequestMessage = useCallback(
     async (message) => {
@@ -882,7 +1201,12 @@ export function useMeetingRtcSession({
       'room-state': handleRoomSnapshotMessage,
       'room-closed': handleRoomClosedMessage,
       'router-rtp-capabilities': handleRouterRtpCapabilitiesMessage,
+      'media-state': handleMediaStateMessage,
+      'new-producer': handleNewProducerMessage,
+      'producer-closed': handleProducerClosedMessage,
       'chat-message': handleChatMessage,
+      'chat-message-ack': handleChatMessageAck,
+      error: handleErrorMessage,
       'peer-join': handlePeerJoinMessage,
       'peer-leave': handlePeerLeaveMessage,
       'share-started': handleShareStartedMessage,
@@ -894,11 +1218,16 @@ export function useMeetingRtcSession({
     }),
     [
       handleAnswerMessage,
+      handleChatMessageAck,
       handleChatMessage,
+      handleErrorMessage,
       handleIceCandidateMessage,
+      handleMediaStateMessage,
+      handleNewProducerMessage,
       handleOfferMessage,
       handlePeerJoinMessage,
       handlePeerLeaveMessage,
+      handleProducerClosedMessage,
       handleRenegotiateRequestMessage,
       handleRoomClosedMessage,
       handleRouterRtpCapabilitiesMessage,
@@ -1001,9 +1330,6 @@ export function useMeetingRtcSession({
 
       if (role === 'host' && (microphoneStreamRef.current || displayStreamRef.current)) {
         Promise.resolve().then(async () => {
-          for (const viewerPeerId of viewerPeerIdsRef.current) {
-            await buildHostPeerConnectionRef.current(viewerPeerId)
-          }
           if (displayStreamRef.current) {
             announceShareState(true)
             setShareState('sharing')
@@ -1025,8 +1351,17 @@ export function useMeetingRtcSession({
       const closeReason = event.closeReason || 'Room socket closed before ready.'
 
       meetingSocketConnectedRef.current = false
+      pendingChatRequestsRef.current.forEach((deferred) => {
+        window.clearTimeout(deferred.timer)
+        deferred.reject(new Error(closeReason))
+      })
+      pendingChatRequestsRef.current.clear()
       closeHostPeerConnections()
       closeViewerPeerConnection()
+      cleanupAllRemoteConsumers()
+      localAudioProducerRef.current = null
+      localScreenProducerRef.current = null
+      meetingSfuClient.reset()
 
       if (pendingConnect) {
         pendingConnect.reject(new Error(closeReason))
@@ -1084,7 +1419,9 @@ export function useMeetingRtcSession({
       closeHostPeerConnections,
       closeMeetingWindow,
       closeViewerPeerConnection,
+      cleanupAllRemoteConsumers,
       connectSocket,
+      meetingSfuClient,
       stopDisplayStream
     ]
   )
@@ -1148,10 +1485,17 @@ export function useMeetingRtcSession({
     setShareState('idle')
     setStatusMessage('已停止桌面共享，语音通话继续。')
 
-    if (isHost && connectionState === 'connected') {
+    if (isHost && connectionState === 'connected' && !meetingSfuClient.isInitialized) {
       await rebuildHostPeerConnections()
     }
-  }, [announceShareState, connectionState, isHost, rebuildHostPeerConnections, stopDisplayStream])
+  }, [
+    announceShareState,
+    connectionState,
+    isHost,
+    meetingSfuClient.isInitialized,
+    rebuildHostPeerConnections,
+    stopDisplayStream
+  ])
 
   const beginShareWithSource = useCallback(
     async (sourceId) => {
@@ -1190,7 +1534,10 @@ export function useMeetingRtcSession({
 
         if (connectionState === 'connected') {
           try {
-            await rebuildHostPeerConnections()
+            const published = await publishLocalScreenIfReady().catch(() => false)
+            if (!published && !meetingSfuClient.isInitialized) {
+              await rebuildHostPeerConnections()
+            }
             announceShareState(true)
           } catch {
             setStatusMessage('本地共享已开始，网络协商失败，正在等待连接恢复后同步给其他参会人。')
@@ -1222,6 +1569,8 @@ export function useMeetingRtcSession({
       connectionState,
       isHost,
       isRoomOwner,
+      meetingSfuClient.isInitialized,
+      publishLocalScreenIfReady,
       rebuildHostPeerConnections,
       stopDisplayStream,
       stopSharing,

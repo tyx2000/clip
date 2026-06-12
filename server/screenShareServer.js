@@ -9,9 +9,11 @@ const { MEETING_SIGNAL_TYPES } = require('./meetingSignalProtocol')
 const PORT = Number(process.env.SCREEN_SHARE_PORT || 8788)
 const HOST = process.env.SCREEN_SHARE_HOST || '127.0.0.1'
 const ROOM_IDLE_TTL_MS = 30 * 60 * 1000
+const HOST_RECONNECT_GRACE_MS = Number(process.env.HOST_RECONNECT_GRACE_MS || 30_000)
 const MAX_VIEWERS_PER_ROOM = 4
 
 const roomListSubscribers = new Set()
+const hostReconnectTimers = new Map()
 let screenShareServerPromise = null
 
 function getScreenShareServerOrigin() {
@@ -177,6 +179,7 @@ function broadcastRoomState(room) {
 }
 
 function closeRoom(room, message = 'Host left the meeting. Room closed.') {
+  clearHostReconnectTimer(room.roomId)
   const payload = {
     type: MEETING_SIGNAL_TYPES.ROOM_CLOSED,
     roomId: room.roomId,
@@ -218,13 +221,57 @@ function broadcastChatMessage(room, messagePayload) {
   }
 }
 
-function handlePeerDisconnect(room, role, peerId) {
+function broadcastToRoomExcept(room, excludedPeerId, payload) {
+  if (room.host.peerId !== excludedPeerId && room.host.socket) {
+    sendJson(room.host.socket, payload)
+  }
+
+  for (const viewer of room.viewers.values()) {
+    if (viewer.peerId === excludedPeerId || !viewer.socket) {
+      continue
+    }
+
+    sendJson(viewer.socket, payload)
+  }
+}
+
+function clearHostReconnectTimer(roomId) {
+  const timer = hostReconnectTimers.get(roomId)
+  if (!timer) {
+    return
+  }
+
+  clearTimeout(timer)
+  hostReconnectTimers.delete(roomId)
+}
+
+function scheduleHostReconnectClose(room) {
+  clearHostReconnectTimer(room.roomId)
+  const timer = setTimeout(() => {
+    const latestRoom = ensureRoom(room.roomId)
+    if (!latestRoom || isSocketOpen(latestRoom.host.socket)) {
+      return
+    }
+    closeRoom(latestRoom, '主持人重连超时，房间已关闭。')
+  }, HOST_RECONNECT_GRACE_MS)
+  timer.unref?.()
+  hostReconnectTimers.set(room.roomId, timer)
+}
+
+function handlePeerDisconnect(room, role, peerId, { closeHostRoom = false } = {}) {
   if (role === 'host') {
     void meetingSfuServer.closeParticipantMedia(room.roomId, peerId).catch(() => {})
     room.host.socket = null
     room.host.audioEnabled = false
     room.shareActive = false
-    closeRoom(room, '主持人已离开会议，房间已关闭。')
+    room.shareOwnerPeerId = ''
+    room.updatedAt = now()
+    if (closeHostRoom) {
+      closeRoom(room, '主持人已离开会议，房间已关闭。')
+      return true
+    }
+    scheduleHostReconnectClose(room)
+    broadcastRoomState(room)
     return true
   } else {
     void meetingSfuServer.closeParticipantMedia(room.roomId, peerId).catch(() => {})
@@ -253,7 +300,7 @@ function handlePeerDisconnect(room, role, peerId) {
 
 function removePeer(room, role, peerId) {
   if (role === 'host') {
-    handlePeerDisconnect(room, role, peerId)
+    handlePeerDisconnect(room, role, peerId, { closeHostRoom: true })
     return
   }
 
@@ -437,6 +484,9 @@ function startScreenShareServer() {
         }
 
         peer.socket = socket
+        if (role === 'host') {
+          clearHostReconnectTimer(room.roomId)
+        }
         socketState.roomId = room.roomId
         socketState.role = role
         socketState.peerId = peerId
@@ -572,6 +622,88 @@ function startScreenShareServer() {
         return
       }
 
+      if (message.type === MEETING_SIGNAL_TYPES.MEDIA_STATE) {
+        try {
+          const producers = await meetingSfuServer.listProducers(room.roomId, socketState.peerId)
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.MEDIA_STATE,
+            roomId: room.roomId,
+            producers
+          })
+        } catch (error) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            requestId: message.requestId || '',
+            message: error instanceof Error ? error.message : 'Failed to list SFU producers.'
+          })
+        }
+        return
+      }
+
+      if (message.type === MEETING_SIGNAL_TYPES.PRODUCE) {
+        try {
+          const producer = await meetingSfuServer.produce(room.roomId, socketState.peerId, {
+            kind: message.kind,
+            rtpParameters: message.rtpParameters,
+            appData: message.appData || {}
+          })
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.PRODUCED,
+            requestId: message.requestId || '',
+            roomId: room.roomId,
+            producer
+          })
+          broadcastToRoomExcept(room, socketState.peerId, {
+            type: MEETING_SIGNAL_TYPES.NEW_PRODUCER,
+            roomId: room.roomId,
+            producer
+          })
+        } catch (error) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            requestId: message.requestId || '',
+            message: error instanceof Error ? error.message : 'Failed to produce SFU media.'
+          })
+        }
+        return
+      }
+
+      if (message.type === MEETING_SIGNAL_TYPES.CONSUME) {
+        try {
+          const consumer = await meetingSfuServer.consume(room.roomId, socketState.peerId, {
+            producerId: message.producerId,
+            rtpCapabilities: message.rtpCapabilities
+          })
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.CONSUMED,
+            requestId: message.requestId || '',
+            roomId: room.roomId,
+            consumer
+          })
+        } catch (error) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            requestId: message.requestId || '',
+            message: error instanceof Error ? error.message : 'Failed to consume SFU media.'
+          })
+        }
+        return
+      }
+
+      if (message.type === MEETING_SIGNAL_TYPES.CLOSE_PRODUCER) {
+        const producerId = String(message.producerId || '')
+        if (producerId) {
+          await meetingSfuServer.closeProducer(room.roomId, socketState.peerId, producerId)
+          broadcastToRoomExcept(room, socketState.peerId, {
+            type: MEETING_SIGNAL_TYPES.PRODUCER_CLOSED,
+            roomId: room.roomId,
+            producerId,
+            peerId: socketState.peerId
+          })
+        }
+        return
+      }
+
       if (message.type === MEETING_SIGNAL_TYPES.SHARE_STATE && socketState.role === 'host') {
         room.shareActive = Boolean(message.active)
         room.shareOwnerPeerId = room.shareActive ? socketState.peerId : ''
@@ -624,6 +756,7 @@ function startScreenShareServer() {
       }
 
       if (message.type === MEETING_SIGNAL_TYPES.CHAT_MESSAGE) {
+        const requestId = String(message.requestId || '')
         const kind = message.kind === 'image' ? 'image' : 'text'
         const text =
           kind === 'text'
@@ -635,14 +768,24 @@ function startScreenShareServer() {
           kind === 'image' ? String(message.imageDataUrl || '').slice(0, 3_000_000) : ''
 
         if (!text && !imageDataUrl) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            requestId,
+            message: '消息内容为空。'
+          })
           return
         }
 
         if (imageDataUrl && !imageDataUrl.startsWith('data:image/')) {
+          sendJson(socket, {
+            type: MEETING_SIGNAL_TYPES.ERROR,
+            requestId,
+            message: '图片消息格式无效。'
+          })
           return
         }
 
-        broadcastChatMessage(room, {
+        const chatMessage = {
           messageId: randomId('msg-'),
           roomId: room.roomId,
           senderPeerId: socketState.peerId,
@@ -651,7 +794,13 @@ function startScreenShareServer() {
           text,
           imageDataUrl,
           createdAt: now()
+        }
+        sendJson(socket, {
+          type: MEETING_SIGNAL_TYPES.CHAT_MESSAGE_ACK,
+          requestId,
+          message: chatMessage
         })
+        broadcastChatMessage(room, chatMessage)
         return
       }
 

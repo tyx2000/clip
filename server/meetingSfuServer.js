@@ -1,15 +1,18 @@
 function createMeetingSfuServer() {
   const roomsMedia = new Map()
   let workerPromise = null
+  const announcedAddress = String(process.env.SFU_ANNOUNCED_ADDRESS || '').trim() || undefined
   const WEBRTC_TRANSPORT_OPTIONS = {
     listenInfos: [
       {
         protocol: 'udp',
-        ip: '127.0.0.1'
+        ip: process.env.SFU_LISTEN_IP || '127.0.0.1',
+        announcedAddress
       },
       {
         protocol: 'tcp',
-        ip: '127.0.0.1'
+        ip: process.env.SFU_LISTEN_IP || '127.0.0.1',
+        announcedAddress
       }
     ],
     enableUdp: true,
@@ -34,14 +37,23 @@ function createMeetingSfuServer() {
           logLevel: 'warn'
         })
       )
+      workerPromise
+        .then((worker) => {
+          worker.on('died', () => {
+            roomsMedia.clear()
+            workerPromise = null
+          })
+        })
+        .catch(() => {
+          workerPromise = null
+        })
     }
 
     return await workerPromise
   }
 
-  function createRoomMediaState({ worker, router }) {
+  function createRoomMediaState({ router }) {
     return {
-      worker,
       router,
       peers: new Map()
     }
@@ -54,7 +66,8 @@ function createMeetingSfuServer() {
         sendTransport: null,
         recvTransport: null,
         producers: new Map(),
-        consumers: new Map()
+        consumers: new Map(),
+        consumerProducerIds: new Map()
       }
       roomMedia.peers.set(peerId, peerState)
     }
@@ -99,7 +112,7 @@ function createMeetingSfuServer() {
       ]
     })
 
-    const roomMedia = createRoomMediaState({ worker, router })
+    const roomMedia = createRoomMediaState({ router })
     roomsMedia.set(normalizedRoomId, roomMedia)
     return roomMedia
   }
@@ -151,12 +164,125 @@ function createMeetingSfuServer() {
     return true
   }
 
-  async function produce() {
-    throw new Error('meetingSfuServer.produce is not implemented yet.')
+  function getPeerIdForProducer(roomMedia, producerId) {
+    for (const [peerId, peerState] of roomMedia.peers.entries()) {
+      if (peerState.producers.has(producerId)) {
+        return peerId
+      }
+    }
+    return ''
   }
 
-  async function consume() {
-    throw new Error('meetingSfuServer.consume is not implemented yet.')
+  function serializeProducer(peerId, producer) {
+    return {
+      producerId: producer.id,
+      peerId,
+      kind: producer.kind,
+      appData: producer.appData || {}
+    }
+  }
+
+  async function produce(roomId, peerId, { kind, rtpParameters, appData = {} } = {}) {
+    const roomMedia = await ensureMeetingRouter(roomId)
+    const peerState = getOrCreatePeerState(roomMedia, peerId)
+    if (!peerState.sendTransport) {
+      throw new Error('send transport does not exist for this peer.')
+    }
+
+    const producer = await peerState.sendTransport.produce({
+      kind,
+      rtpParameters,
+      appData: {
+        ...appData,
+        peerId
+      }
+    })
+
+    peerState.producers.set(producer.id, producer)
+    producer.on('transportclose', () => {
+      peerState.producers.delete(producer.id)
+    })
+    producer.on('close', () => {
+      peerState.producers.delete(producer.id)
+    })
+
+    return serializeProducer(peerId, producer)
+  }
+
+  async function consume(roomId, peerId, { producerId, rtpCapabilities } = {}) {
+    const roomMedia = await ensureMeetingRouter(roomId)
+    const peerState = getOrCreatePeerState(roomMedia, peerId)
+    const normalizedProducerId = String(producerId || '')
+    if (!peerState.recvTransport) {
+      throw new Error('recv transport does not exist for this peer.')
+    }
+    if (!normalizedProducerId) {
+      throw new Error('producerId is required.')
+    }
+    if (!roomMedia.router.canConsume({ producerId: normalizedProducerId, rtpCapabilities })) {
+      throw new Error('router cannot consume this producer with the provided RTP capabilities.')
+    }
+
+    const producerPeerId = getPeerIdForProducer(roomMedia, normalizedProducerId)
+    const producerPeerState = producerPeerId ? roomMedia.peers.get(producerPeerId) : null
+    const producer = producerPeerState?.producers.get(normalizedProducerId)
+    const consumer = await peerState.recvTransport.consume({
+      producerId: normalizedProducerId,
+      rtpCapabilities,
+      paused: false
+    })
+
+    peerState.consumers.set(consumer.id, consumer)
+    peerState.consumerProducerIds.set(consumer.id, normalizedProducerId)
+    consumer.on('transportclose', () => {
+      peerState.consumers.delete(consumer.id)
+      peerState.consumerProducerIds.delete(consumer.id)
+    })
+    consumer.on('producerclose', () => {
+      peerState.consumers.delete(consumer.id)
+      peerState.consumerProducerIds.delete(consumer.id)
+    })
+
+    return {
+      id: consumer.id,
+      producerId: normalizedProducerId,
+      producerPeerId,
+      kind: consumer.kind,
+      rtpParameters: consumer.rtpParameters,
+      appData: producer?.appData || {}
+    }
+  }
+
+  async function closeProducer(roomId, peerId, producerId) {
+    const roomMedia = roomsMedia.get(String(roomId || '').trim())
+    if (!roomMedia) {
+      return false
+    }
+
+    const peerState = roomMedia.peers.get(String(peerId || '').trim())
+    const producer = peerState?.producers.get(String(producerId || ''))
+    if (!producer) {
+      return false
+    }
+
+    producer.close()
+    peerState.producers.delete(producer.id)
+    return true
+  }
+
+  async function listProducers(roomId, excludePeerId = '') {
+    const roomMedia = await ensureMeetingRouter(roomId)
+    const producers = []
+    const normalizedExcludePeerId = String(excludePeerId || '').trim()
+    for (const [peerId, peerState] of roomMedia.peers.entries()) {
+      if (peerId === normalizedExcludePeerId) {
+        continue
+      }
+      for (const producer of peerState.producers.values()) {
+        producers.push(serializeProducer(peerId, producer))
+      }
+    }
+    return producers
   }
 
   async function closeParticipantMedia(roomId, peerId) {
@@ -174,6 +300,7 @@ function createMeetingSfuServer() {
     peerState.recvTransport?.close()
     peerState.producers.forEach((producer) => producer.close())
     peerState.consumers.forEach((consumer) => consumer.close())
+    peerState.consumerProducerIds.clear()
     roomMedia.peers.delete(String(peerId || '').trim())
     return true
   }
@@ -190,12 +317,14 @@ function createMeetingSfuServer() {
       peerState.recvTransport?.close()
       peerState.producers?.forEach?.((producer) => producer.close())
       peerState.consumers?.forEach?.((consumer) => consumer.close())
+      peerState.consumerProducerIds?.clear?.()
     }
 
     roomMedia.router?.close()
-    roomMedia.worker?.close()
     roomsMedia.delete(normalizedRoomId)
     if (roomsMedia.size === 0) {
+      const worker = await workerPromise.catch(() => null)
+      worker?.close?.()
       workerPromise = null
     }
     return true
@@ -210,6 +339,8 @@ function createMeetingSfuServer() {
     connectRecvTransport,
     produce,
     consume,
+    closeProducer,
+    listProducers,
     closeParticipantMedia,
     closeRoomMedia
   }

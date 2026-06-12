@@ -12,9 +12,17 @@ function createDeferred() {
   return { promise, resolve, reject }
 }
 
-// 这个 hook 只负责 renderer 侧 mediasoup-client 的 transport 壳：
-// 1. 当前阶段只初始化 Device，并创建 send/recv transport。
-// 2. 不 produce / consume 任何媒体，先把 SFU 传输层的本地状态接起来。
+function createRequestId(prefix = 'sfu-request-') {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}${crypto.randomUUID()}`
+  }
+  return `${prefix}${Math.random().toString(16).slice(2, 10)}`
+}
+
+// 这个 hook 负责 renderer 侧 mediasoup-client 生命周期：
+// 1. 初始化 Device，并创建 send/recv transport。
+// 2. 发布本地麦克风/屏幕 track，消费远端 producer。
+// 3. 信令仍走主进程持有的会议 WS。
 export function useMeetingSfuClient() {
   const [device, setDevice] = useState(null)
   const [routerRtpCapabilities, setRouterRtpCapabilities] = useState(null)
@@ -28,8 +36,12 @@ export function useMeetingSfuClient() {
   const pendingCreateRecvTransportRef = useRef(null)
   const pendingConnectSendTransportRef = useRef(null)
   const pendingConnectRecvTransportRef = useRef(null)
+  const pendingProduceRequestsRef = useRef(new Map())
+  const pendingConsumeRequestsRef = useRef(new Map())
   const inFlightCreateSendTransportRef = useRef(null)
   const inFlightCreateRecvTransportRef = useRef(null)
+  const producersRef = useRef(new Map())
+  const consumersRef = useRef(new Map())
 
   const settleDeferred = useCallback((ref, payload, error = null) => {
     if (!ref.current) {
@@ -77,6 +89,22 @@ export function useMeetingSfuClient() {
 
     inFlightCreateSendTransportRef.current = null
     inFlightCreateRecvTransportRef.current = null
+    for (const producer of producersRef.current.values()) {
+      producer.close()
+    }
+    for (const consumer of consumersRef.current.values()) {
+      consumer.close()
+    }
+    producersRef.current.clear()
+    consumersRef.current.clear()
+    pendingProduceRequestsRef.current.forEach((deferred) => {
+      deferred.reject(new Error('SFU session reset before media publish completed.'))
+    })
+    pendingConsumeRequestsRef.current.forEach((deferred) => {
+      deferred.reject(new Error('SFU session reset before media consume completed.'))
+    })
+    pendingProduceRequestsRef.current.clear()
+    pendingConsumeRequestsRef.current.clear()
   }, [settleDeferred])
 
   const initializeDevice = useCallback(async (nextRouterRtpCapabilities) => {
@@ -136,6 +164,52 @@ export function useMeetingSfuClient() {
     [sendRequestWithDeferred]
   )
 
+  const sendRequestWithRequestId = useCallback(
+    (sendSocketMessage, payload, pendingMap, errorText) => {
+      const requestId = createRequestId()
+      const deferred = createDeferred()
+      pendingMap.current.set(requestId, deferred)
+      const sent = sendSocketMessage({
+        ...payload,
+        requestId
+      })
+      if (!sent) {
+        pendingMap.current.delete(requestId)
+        deferred.reject(new Error(errorText))
+      }
+      return deferred.promise
+    },
+    []
+  )
+
+  const attachSendTransportProduceHandler = useCallback(
+    (transport, sendSocketMessage) => {
+      transport.on('produce', async ({ kind, rtpParameters, appData }, callback, errback) => {
+        try {
+          const message = await sendRequestWithRequestId(
+            sendSocketMessage,
+            {
+              type: 'produce',
+              kind,
+              rtpParameters,
+              appData
+            },
+            pendingProduceRequestsRef,
+            'Failed to request SFU producer.'
+          )
+          const producerId = message.producer?.producerId
+          if (!producerId) {
+            throw new Error('SFU server did not return a producer id.')
+          }
+          callback({ id: producerId })
+        } catch (error) {
+          errback(error)
+        }
+      })
+    },
+    [sendRequestWithRequestId]
+  )
+
   const ensureSendTransport = useCallback(
     async (sendSocketMessage) => {
       if (sendTransportRef.current) {
@@ -162,6 +236,7 @@ export function useMeetingSfuClient() {
             pendingConnectRef: pendingConnectSendTransportRef,
             connectErrorText: 'Failed to connect SFU send transport.'
           })
+          attachSendTransportProduceHandler(transport, sendSocketMessage)
 
           sendTransportRef.current = transport
           setSendTransport(transport)
@@ -173,7 +248,7 @@ export function useMeetingSfuClient() {
 
       return await inFlightCreateSendTransportRef.current
     },
-    [attachTransportHandlers, sendRequestWithDeferred]
+    [attachSendTransportProduceHandler, attachTransportHandlers, sendRequestWithDeferred]
   )
 
   const ensureRecvTransport = useCallback(
@@ -242,8 +317,44 @@ export function useMeetingSfuClient() {
         return
       }
 
+      if (message.type === 'produced' && message.requestId) {
+        const deferred = pendingProduceRequestsRef.current.get(message.requestId)
+        if (deferred) {
+          pendingProduceRequestsRef.current.delete(message.requestId)
+          deferred.resolve(message)
+        }
+        return
+      }
+
+      if (message.type === 'consumed' && message.requestId) {
+        const deferred = pendingConsumeRequestsRef.current.get(message.requestId)
+        if (deferred) {
+          pendingConsumeRequestsRef.current.delete(message.requestId)
+          deferred.resolve(message)
+        }
+        return
+      }
+
       if (message.type === 'error') {
         const nextError = new Error(message.message || 'SFU signaling failed.')
+        let matchedRequest = false
+        if (message.requestId) {
+          const produceDeferred = pendingProduceRequestsRef.current.get(message.requestId)
+          if (produceDeferred) {
+            pendingProduceRequestsRef.current.delete(message.requestId)
+            matchedRequest = true
+            produceDeferred.reject(nextError)
+          }
+          const consumeDeferred = pendingConsumeRequestsRef.current.get(message.requestId)
+          if (consumeDeferred) {
+            pendingConsumeRequestsRef.current.delete(message.requestId)
+            matchedRequest = true
+            consumeDeferred.reject(nextError)
+          }
+        }
+        if (message.requestId && !matchedRequest) {
+          return
+        }
         settleDeferred(pendingCreateSendTransportRef, null, nextError)
         settleDeferred(pendingCreateRecvTransportRef, null, nextError)
         settleDeferred(pendingConnectSendTransportRef, null, nextError)
@@ -252,6 +363,111 @@ export function useMeetingSfuClient() {
     },
     [settleDeferred]
   )
+
+  const publishTrack = useCallback(
+    async (sendSocketMessage, track, { stream = null, source = '', peerId = '' } = {}) => {
+      if (!track) {
+        throw new Error('media track is required.')
+      }
+
+      const transport = await ensureSendTransport(sendSocketMessage)
+      const producer = await transport.produce({
+        track,
+        appData: {
+          source,
+          peerId
+        }
+      })
+      producersRef.current.set(producer.id, producer)
+      producer.on('transportclose', () => {
+        producersRef.current.delete(producer.id)
+      })
+      producer.on('trackended', () => {
+        producersRef.current.delete(producer.id)
+      })
+      producer.on('close', () => {
+        producersRef.current.delete(producer.id)
+      })
+
+      return {
+        producer,
+        stream
+      }
+    },
+    [ensureSendTransport]
+  )
+
+  const consumeProducer = useCallback(
+    async (sendSocketMessage, producerInfo) => {
+      if (!deviceRef.current) {
+        throw new Error('SFU device is not initialized yet.')
+      }
+      if (!producerInfo?.producerId) {
+        throw new Error('producerId is required.')
+      }
+
+      const transport = await ensureRecvTransport(sendSocketMessage)
+      const message = await sendRequestWithRequestId(
+        sendSocketMessage,
+        {
+          type: 'consume',
+          producerId: producerInfo.producerId,
+          rtpCapabilities: deviceRef.current.rtpCapabilities
+        },
+        pendingConsumeRequestsRef,
+        'Failed to request SFU consumer.'
+      )
+      const consumerOptions = message.consumer
+      const consumer = await transport.consume({
+        id: consumerOptions.id,
+        producerId: consumerOptions.producerId,
+        kind: consumerOptions.kind,
+        rtpParameters: consumerOptions.rtpParameters,
+        appData: {
+          ...(consumerOptions.appData || {}),
+          ...(producerInfo.appData || {}),
+          producerPeerId: consumerOptions.producerPeerId || producerInfo.peerId || ''
+        }
+      })
+      consumersRef.current.set(consumer.id, consumer)
+      consumer.on('transportclose', () => {
+        consumersRef.current.delete(consumer.id)
+      })
+      consumer.on('producerclose', () => {
+        consumersRef.current.delete(consumer.id)
+      })
+      return consumer
+    },
+    [ensureRecvTransport, sendRequestWithRequestId]
+  )
+
+  const closeProducer = useCallback((sendSocketMessage, producerOrId) => {
+    const producerId = typeof producerOrId === 'string' ? producerOrId : producerOrId?.id || ''
+    if (!producerId) {
+      return false
+    }
+
+    const producer = producersRef.current.get(producerId)
+    producer?.close()
+    producersRef.current.delete(producerId)
+    sendSocketMessage({
+      type: 'close-producer',
+      producerId
+    })
+    return true
+  }, [])
+
+  const closeConsumer = useCallback((consumerOrId) => {
+    const consumerId = typeof consumerOrId === 'string' ? consumerOrId : consumerOrId?.id || ''
+    if (!consumerId) {
+      return false
+    }
+
+    const consumer = consumersRef.current.get(consumerId)
+    consumer?.close()
+    consumersRef.current.delete(consumerId)
+    return true
+  }, [])
 
   return useMemo(
     () => ({
@@ -265,24 +481,15 @@ export function useMeetingSfuClient() {
       ensureRecvTransport,
       handleSocketMessage,
       reset,
-      async publishAudio() {
-        throw new Error('useMeetingSfuClient.publishAudio is not implemented yet.')
-      },
+      publishTrack,
+      publishAudio: publishTrack,
       async publishCamera() {
         throw new Error('useMeetingSfuClient.publishCamera is not implemented yet.')
       },
-      async publishScreen() {
-        throw new Error('useMeetingSfuClient.publishScreen is not implemented yet.')
-      },
-      async closeProducer() {
-        throw new Error('useMeetingSfuClient.closeProducer is not implemented yet.')
-      },
-      async consumeProducer() {
-        throw new Error('useMeetingSfuClient.consumeProducer is not implemented yet.')
-      },
-      async closePeerConsumers() {
-        throw new Error('useMeetingSfuClient.closePeerConsumers is not implemented yet.')
-      }
+      publishScreen: publishTrack,
+      closeProducer,
+      consumeProducer,
+      closeConsumer
     }),
     [
       device,
@@ -290,6 +497,10 @@ export function useMeetingSfuClient() {
       ensureSendTransport,
       handleSocketMessage,
       initializeDevice,
+      closeConsumer,
+      closeProducer,
+      consumeProducer,
+      publishTrack,
       recvTransport,
       reset,
       routerRtpCapabilities,

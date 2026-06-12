@@ -259,15 +259,10 @@ function LobbyWindow({ currentUserId, titleBarHeight }) {
         .map((item) => [item.roomId, item])
     )
 
-    const storedRooms = readMeetingRooms()
-    const nextStoredRooms = storedRooms.filter((item) => roomMap.has(item.roomId))
-    if (nextStoredRooms.length !== storedRooms.length) {
-      writeMeetingRooms(nextStoredRooms)
-    }
-
-    const nextRooms = nextStoredRooms
+    const nextRooms = readMeetingRooms()
       .map((item) => {
         const syncedRoom = roomMap.get(item.roomId) || {}
+        const hasSyncedRoom = roomMap.has(item.roomId)
         return {
           ...item,
           ...syncedRoom,
@@ -277,15 +272,17 @@ function LobbyWindow({ currentUserId, titleBarHeight }) {
           token: item.token,
           wsUrl: item.wsUrl,
           hostPresent:
-            typeof syncedRoom.hostPresent === 'boolean'
+            hasSyncedRoom && typeof syncedRoom.hostPresent === 'boolean'
               ? syncedRoom.hostPresent
               : Boolean(item.hostPresent),
           shareActive:
-            typeof syncedRoom.shareActive === 'boolean'
+            hasSyncedRoom && typeof syncedRoom.shareActive === 'boolean'
               ? syncedRoom.shareActive
               : Boolean(item.shareActive),
           viewerCount: Number(
-            Number.isFinite(syncedRoom.viewerCount) ? syncedRoom.viewerCount : item.viewerCount || 0
+            hasSyncedRoom && Number.isFinite(syncedRoom.viewerCount)
+              ? syncedRoom.viewerCount
+              : item.viewerCount || 0
           )
         }
       })
@@ -295,6 +292,7 @@ function LobbyWindow({ currentUserId, titleBarHeight }) {
         return rightUpdatedAt - leftUpdatedAt
       })
 
+    writeMeetingRooms(nextRooms)
     setRooms(nextRooms)
   }, [])
 
@@ -393,8 +391,8 @@ function LobbyWindow({ currentUserId, titleBarHeight }) {
         peerId: payload.peerId,
         token: payload.token,
         wsUrl: payload.wsUrl,
-        hostPresent: true,
-        shareActive: false,
+        hostPresent: Boolean(payload.hostPresent),
+        shareActive: Boolean(payload.shareActive),
         viewerCount: Number(payload.viewerCount || 0)
       })
 

@@ -672,7 +672,13 @@ function MeetingPanel({
       : '当前为语音会议模式，主持人开始共享后这里会切换为桌面画面。'
 
   const microphoneLabel =
-    microphoneState === 'requesting' ? '开麦中...' : microphoneEnabled ? '麦克风已开' : '静音中'
+    microphoneState === 'requesting'
+      ? '开麦中...'
+      : microphoneState === 'blocked'
+        ? '麦克风受限'
+        : microphoneEnabled
+          ? '麦克风已开'
+          : '麦克风关闭'
   const meetingTitle = `会议 · ${middleEllipsis(roomInfo?.roomId || activeRoomId || '--', 28)}`
 
   useEffect(() => {

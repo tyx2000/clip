@@ -10,6 +10,7 @@ files:
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
 asarUnpack:
   - resources/**
+  - node_modules/mediasoup/worker/**
 win:
   executableName: Clip
 nsis:
