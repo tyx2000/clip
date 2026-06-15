@@ -1,9 +1,9 @@
 /** 文件作用：负责录屏结束后的本地合并输出和临时目录清理。 */
-import { existsSync } from 'fs'
+import { createReadStream, createWriteStream, existsSync } from 'fs'
 import { copyFile, mkdir, rename, rm, stat, unlink, writeFile } from 'fs/promises'
+import { once } from 'node:events'
 import { dirname, join } from 'path'
 import {
-  createRecordingCaptureTempFileName,
   createRecordingFileName,
   getRecordingsDirectoryPath,
   listSessionArtifactPaths,
@@ -17,6 +17,72 @@ import {
   persistRecordingSessionState,
   writeRecordingMetadata
 } from './recordingStorage'
+
+/** 把一个输入文件按流追加写入到目标写流中，避免大文件整块进入内存。 */
+async function appendFileToWriteStream(inputPath, outputStream) {
+  const inputStream = createReadStream(inputPath)
+  for await (const chunk of inputStream) {
+    const canContinue = outputStream.write(chunk)
+    if (!canContinue) {
+      await once(outputStream, 'drain')
+    }
+  }
+}
+
+/** 按原始字节顺序重组云同步分片，得到与连续录制文件等价的最终输出。 */
+async function reassembleCloudSyncParts(readySegments, outputFilePath) {
+  const tempOutputPath = `${outputFilePath}.part`
+  const outputStream = createWriteStream(tempOutputPath, { flags: 'w' })
+
+  try {
+    for (const segment of readySegments) {
+      await appendFileToWriteStream(segment.path, outputStream)
+    }
+
+    await new Promise((resolveCallback, rejectCallback) => {
+      outputStream.end((error) => {
+        if (error) {
+          rejectCallback(error)
+          return
+        }
+        resolveCallback()
+      })
+    })
+
+    await rename(tempOutputPath, outputFilePath)
+  } catch (error) {
+    outputStream.destroy()
+    throw error
+  } finally {
+    if (existsSync(tempOutputPath)) {
+      await unlink(tempOutputPath).catch(() => {})
+    }
+  }
+}
+
+/** 本地最终成片已生成后，回收已经成功上传的云同步分片文件。 */
+async function cleanupUploadedCloudSyncPartFiles(runtimeSession) {
+  if (
+    !runtimeSession.manifest.cloudSyncEnabled ||
+    runtimeSession.manifest.output?.status !== 'ready'
+  ) {
+    return
+  }
+
+  const uploadedSegments = runtimeSession.manifest.segments.filter(
+    (segment) =>
+      segment.status === 'ready' &&
+      segment.uploadStatus === 'uploaded' &&
+      typeof segment.checksum === 'string' &&
+      segment.checksum &&
+      segment.path &&
+      existsSync(segment.path)
+  )
+
+  for (const segment of uploadedSegments) {
+    await unlink(segment.path).catch(() => {})
+  }
+}
 
 /** 在最终输出文件落盘后回填 output 元数据并生成列表项。 */
 async function writeRecordingOutput(runtimeSession, outputFilePath) {
@@ -38,6 +104,7 @@ async function writeRecordingOutput(runtimeSession, outputFilePath) {
     durationSec: runtimeSession.manifest.output.durationSec,
     cloudSync: buildCloudSyncMetadata(runtimeSession)
   })
+  await cleanupUploadedCloudSyncPartFiles(runtimeSession)
 
   // 这里额外构造列表项，是为了 stop 后能直接把新成片返回给渲染层，避免再扫描目录一次。
   const item = await buildRecordingItem(outputFilePath, outputStat)
@@ -93,11 +160,11 @@ export async function cleanupRecordingSessionArtifacts(runtimeSession) {
   deleteRecordingSessionFromDatabase(runtimeSession.id)
 }
 
-/** 把会话中的现有分段或连续录制文件合并成最终成片。 */
+/** 把会话中的现有分段或云同步分片合并成最终成片。 */
 export async function mergeRecordingSession(runtimeSession) {
   /*
    * 输入事实：
-   * - 录制结束后，真正落盘的输入可能是“一份连续文件”或“多份 ready segment”。
+   * - 录制结束后，真正落盘的输入是多份 ready segment。
    * - 上层 stop / recover 都把 merge 视作“产出最终成片”的唯一出口。
    *
    * 状态目标：
@@ -105,46 +172,20 @@ export async function mergeRecordingSession(runtimeSession) {
    * - 让后续列表展示、播放器打开、元数据写回都只面对 output 文件。
    *
    * 风险点：
-   * - 云同步模式和本地分段模式底层产物不同，不能混用同一套合并假设。
+   * - 云同步 part 是连续 MediaRecorder 字节流的切块，不是独立媒体段。
+   * - 本地分段模式的 segment 才是可交给 ffmpeg concat 的媒体段。
    * - 把中断段、缺失段当成有效输入，会得到损坏输出。
    *
    * 顺序约束：
-   * - 先按录制模型选输入路径，再生成最终 output，再回填 output 元数据。
+   * - 先按录制模型选择重组方式，再生成最终 output，再回填 output 元数据。
    *
    * 失败后果：
    * - 最终成片不存在、损坏，或者数据库已经记成 ready 但实际没有可播文件。
    */
-  // 云同步模式并不是把分片再拼回本地，而是直接把连续录制文件转正为最终成片。
-  if (runtimeSession.manifest.cloudSyncEnabled) {
-    const captureTempPath =
-      runtimeSession.captureTempPath ||
-      join(
-        runtimeSession.dir,
-        createRecordingCaptureTempFileName(runtimeSession.manifest.extension)
-      )
-
-    if (!existsSync(captureTempPath)) {
-      // 这里明确报错，是为了区分“没有分段可合并”和“连续录制临时文件丢失”两类问题。
-      throw new Error('Continuous recording file is missing.')
-    }
-
-    // 最终输出路径统一落到 Recording 目录，避免会话临时目录被清理后成片也丢失。
-    const outputFilePath = join(
-      getRecordingsDirectoryPath(),
-      createRecordingFileName(runtimeSession.manifest.extension)
-    )
-    await mkdir(dirname(outputFilePath), { recursive: true })
-    // 这里用 rename 而不是 copy，目的是避免多一次大文件复制带来的额外 IO。
-    await rename(captureTempPath, outputFilePath)
-    runtimeSession.captureTempPath = ''
-
-    return await writeRecordingOutput(runtimeSession, outputFilePath)
-  }
-
-  // 本地分段录制只合并 status=ready 的片段，避免把中断或缺失片段当成有效输入。
-  const readySegments = runtimeSession.manifest.segments.filter(
-    (segment) => segment.status === 'ready'
-  )
+  // 只合并 status=ready 的片段，避免把中断或缺失片段当成有效输入。
+  const readySegments = runtimeSession.manifest.segments
+    .filter((segment) => segment.status === 'ready')
+    .sort((left, right) => Number(left.index || 0) - Number(right.index || 0))
   if (!readySegments.length) {
     throw new Error('No completed recording segments available for merge.')
   }
@@ -154,6 +195,12 @@ export async function mergeRecordingSession(runtimeSession) {
     createRecordingFileName(runtimeSession.manifest.extension)
   )
   await mkdir(dirname(outputFilePath), { recursive: true })
+
+  if (runtimeSession.manifest.cloudSyncEnabled) {
+    // 云同步分片是同一条连续录制流的字节切片，必须按字节顺序重组，不能当独立视频段 concat。
+    await reassembleCloudSyncParts(readySegments, outputFilePath)
+    return await writeRecordingOutput(runtimeSession, outputFilePath)
+  }
 
   // 单分段时直接 copy，避免不必要的 ffmpeg 调用和重编码。
   if (readySegments.length === 1) {

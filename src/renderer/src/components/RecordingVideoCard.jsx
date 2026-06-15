@@ -120,6 +120,7 @@ const MetaLine = styled.p`
 `
 
 const SyncMeta = styled.span`
+  margin-left: 8px;
   color: ${({ $failed }) => ($failed ? '#b91c1c' : '#0f766e')};
   font-weight: 600;
 `
@@ -202,22 +203,22 @@ function getCloudSyncLabel(cloudSync) {
   }
 
   if (Number(cloudSync.failedParts || 0) > 0) {
-    return `???? ${Number(cloudSync.failedParts || 0)} ?`
+    return `同步失败 ${Number(cloudSync.failedParts || 0)} 个`
   }
 
   if (Number(cloudSync.pendingParts || 0) > 0) {
-    return `??? ${Number(cloudSync.pendingParts || 0)} ?`
+    return `待同步 ${Number(cloudSync.pendingParts || 0)} 个`
   }
 
   if (cloudSync.status === 'completed') {
-    return '?????'
+    return '已同步'
   }
 
   if (cloudSync.status === 'merging') {
-    return '????'
+    return '合并中'
   }
 
-  return '???'
+  return '同步中'
 }
 
 function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync }) {
@@ -241,8 +242,8 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
           {canRetryCloudSync ? (
             <RetryButton
               type="button"
-              aria-label="????"
-              title="????"
+              aria-label="重试云同步"
+              title="重试云同步"
               onClick={() => onRetryCloudSync(item)}
             >
               <SyncIcon />
@@ -250,21 +251,21 @@ function RecordingVideoCard({ item, onOpen, onReveal, onDelete, onRetryCloudSync
           ) : null}
           <IconButton
             type="button"
-            aria-label="????"
-            title="????"
+            aria-label="打开录屏"
+            title="打开录屏"
             onClick={() => onOpen(item.path)}
           >
             <OpenIcon />
           </IconButton>
           <IconButton
             type="button"
-            aria-label="????"
-            title="????"
+            aria-label="在文件夹中显示"
+            title="在文件夹中显示"
             onClick={() => onReveal(item.path)}
           >
             <RevealIcon />
           </IconButton>
-          <DeleteButton type="button" aria-label="??" title="??" onClick={() => onDelete(item)}>
+          <DeleteButton type="button" aria-label="删除" title="删除" onClick={() => onDelete(item)}>
             <DeleteIcon />
           </DeleteButton>
         </FloatingActions>

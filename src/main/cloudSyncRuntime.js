@@ -63,16 +63,18 @@ function getPendingCloudSyncParts(runtimeSession) {
     .sort((left, right) => left.index - right.index)
 }
 
-/** 返回当前已就绪且本地文件存在的分片。 */
+/** 返回当前已就绪的分片，包括已上传后被本地回收的分片。 */
 function getReadyCloudSyncParts(runtimeSession) {
   return runtimeSession.manifest.segments
-    .filter((part) => part.status === 'ready' && existsSync(part.path))
+    .filter((part) => part.status === 'ready')
     .sort((left, right) => left.index - right.index)
 }
 
 /** 返回当前已经上传成功的分片。 */
 function getUploadedCloudSyncParts(runtimeSession) {
-  return getReadyCloudSyncParts(runtimeSession).filter((part) => part.uploadStatus === 'uploaded')
+  return getReadyCloudSyncParts(runtimeSession).filter(
+    (part) => part.uploadStatus === 'uploaded' && typeof part.checksum === 'string' && part.checksum
+  )
 }
 
 /** 更新会话的云同步状态字段。 */

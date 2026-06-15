@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useState } from 'react'
 import styled from 'styled-components'
 import RecordingVideoCard from './components/RecordingVideoCard'
 import SourcePickerModal from './components/SourcePickerModal'
@@ -35,13 +35,7 @@ const Title = styled.h1`
   line-height: 1.2;
 `
 
-const Subtitle = styled.p`
-  margin: 0;
-  color: var(--color-text-soft);
-  font-size: 13px;
-`
-
-const StatusText = styled.p`
+const StatusText = styled.span`
   margin: 0;
   color: var(--color-text-soft);
   font-size: 12px;
@@ -56,9 +50,12 @@ const MetricsRow = styled.div`
 const MetricPill = styled.span`
   border-radius: 999px;
   padding: 5px 9px;
-  border: 1px solid ${({ $warning }) => ($warning ? '#fecaca' : 'var(--line-soft)')};
-  background: ${({ $warning }) => ($warning ? '#fef2f2' : 'var(--color-block-input)')};
-  color: ${({ $warning }) => ($warning ? '#b91c1c' : 'var(--color-text-soft)')};
+  border: 1px solid
+    ${({ $danger, $warning }) => ($danger ? '#991b1b' : $warning ? '#fecaca' : 'var(--line-soft)')};
+  background: ${({ $danger, $warning }) =>
+    $danger ? '#fee2e2' : $warning ? '#fef2f2' : 'var(--color-block-input)'};
+  color: ${({ $danger, $warning }) =>
+    $danger ? '#7f1d1d' : $warning ? '#b91c1c' : 'var(--color-text-soft)'};
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
@@ -178,29 +175,30 @@ const PlayerVideo = styled.video`
   border-radius: 8px;
 `
 
+function applySessionStats(result, setRecordingStats) {
+  if (!result) {
+    return
+  }
+
+  setRecordingStats({
+    partCount: Number(result.partCount || 0),
+    currentPartIndex: Number(result.currentPartIndex || 0),
+    currentPartBytes: Number(result.currentPartBytes || 0),
+    totalBytes: Number(result.totalBytes || 0),
+    freeBytes: Number(result.storage?.freeBytes || 0),
+    lowDiskSpace: Boolean(result.storage?.lowDiskSpace),
+    criticalDiskSpace: Boolean(result.storage?.criticalDiskSpace),
+    cloudSyncEnabled: Boolean(result.cloudSyncEnabled),
+    cloudSync: result.cloudSync || null
+  })
+}
+
 function App() {
-  const playerParams = useMemo(() => new URLSearchParams(window.location.search), [])
+  const playerParams = new URLSearchParams(window.location.search)
   const playerUrl = playerParams.get('player') || ''
   const playerName = playerParams.get('name') || '录制回放'
   const isPlayerWindow = Boolean(playerUrl)
-  const preferredMimeType = useMemo(() => getPreferredRecorderMimeType(), [])
-
-  const applySessionStats = useCallback((result, setRecordingStats) => {
-    if (!result) {
-      return
-    }
-
-    setRecordingStats({
-      partCount: Number(result.partCount || 0),
-      currentPartIndex: Number(result.currentPartIndex || 0),
-      currentPartBytes: Number(result.currentPartBytes || 0),
-      totalBytes: Number(result.totalBytes || 0),
-      freeBytes: Number(result.storage?.freeBytes || 0),
-      lowDiskSpace: Boolean(result.storage?.lowDiskSpace),
-      cloudSyncEnabled: Boolean(result.cloudSyncEnabled),
-      cloudSync: result.cloudSync || null
-    })
-  }, [])
+  const [preferredMimeType] = useState(() => getPreferredRecorderMimeType())
 
   const {
     recordings,
@@ -250,9 +248,9 @@ function App() {
       <Page>
         <TopBar>
           <TitleGroup>
-            <Title>屏幕录制</Title>
-            <Subtitle>点击开始录制后选择屏幕或窗口，确认后开始录制。</Subtitle>
-            <StatusText>{statusMessage}</StatusText>
+            <Title>
+              屏幕录制 <StatusText>{statusMessage}</StatusText>
+            </Title>
             {recordingStats ? (
               <MetricsRow>
                 <MetricPill>已写入 {formatBytes(recordingStats.totalBytes)}</MetricPill>
@@ -266,8 +264,12 @@ function App() {
                     ? `云同步开启 · 待传 ${Number(recordingStats.cloudSync?.pendingParts || 0)} · 失败 ${Number(recordingStats.cloudSync?.failedParts || 0)}`
                     : '云同步关闭'}
                 </MetricPill>
-                <MetricPill $warning={recordingStats.lowDiskSpace}>
-                  可用空间 {formatBytes(recordingStats.freeBytes)}
+                <MetricPill
+                  $warning={recordingStats.lowDiskSpace}
+                  $danger={recordingStats.criticalDiskSpace}
+                >
+                  {recordingStats.criticalDiskSpace ? '空间临界' : '可用空间'}{' '}
+                  {formatBytes(recordingStats.freeBytes)}
                 </MetricPill>
               </MetricsRow>
             ) : null}

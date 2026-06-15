@@ -4,6 +4,7 @@ import { mkdir, readdir, stat, statfs, unlink, writeFile } from 'fs/promises'
 import { DatabaseSync } from 'node:sqlite'
 import { dirname, join, resolve, sep } from 'path'
 import {
+  CRITICAL_DISK_SPACE_THRESHOLD_BYTES,
   DEFAULT_CLOUD_SYNC_SERVER_URL,
   DEFAULT_SEGMENT_DURATION_MS,
   LOW_DISK_SPACE_THRESHOLD_BYTES,
@@ -300,7 +301,6 @@ export function createRuntimeSessionFromDatabase(sessionRow, segmentRows) {
     writeQueue: Promise.resolve(),
     writeStream: null,
     partWriteStream: null,
-    captureTempPath: '',
     currentSegment: null,
     manifest: {
       // 这里恢复的是 service 层可直接消费的完整 manifest，而不是数据库原始 row 结构。
@@ -987,16 +987,30 @@ export async function getRecordingStorageSnapshot() {
       ok: true,
       freeBytes,
       // 低磁盘空间只用于提示，不在这里强行中断业务流程。
-      lowDiskSpace: freeBytes > 0 && freeBytes <= LOW_DISK_SPACE_THRESHOLD_BYTES
+      lowDiskSpace: freeBytes > 0 && freeBytes <= LOW_DISK_SPACE_THRESHOLD_BYTES,
+      // 临界磁盘空间由 service 层用于阻止开始或继续写入。
+      criticalDiskSpace: freeBytes > 0 && freeBytes <= CRITICAL_DISK_SPACE_THRESHOLD_BYTES
     }
   } catch {
     // 获取失败时回 ok:false，避免磁盘检查问题反向拖垮录制主流程。
     return {
       ok: false,
       freeBytes: 0,
-      lowDiskSpace: false
+      lowDiskSpace: false,
+      criticalDiskSpace: false
     }
   }
+}
+
+/** 校验录屏目录是否还有足够空间继续写入。 */
+export async function assertRecordingStorageWritable(actionLabel = '继续录制') {
+  const storage = await getRecordingStorageSnapshot()
+  if (storage.ok && storage.criticalDiskSpace) {
+    throw new Error(
+      `${actionLabel}失败：本地可用空间仅剩 ${Math.round(storage.freeBytes / 1024 / 1024)} MB，请先释放磁盘空间。`
+    )
+  }
+  return storage
 }
 
 /** 生成包含磁盘快照的完整会话状态。 */

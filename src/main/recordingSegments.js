@@ -5,7 +5,6 @@ import { once } from 'node:events'
 import { join } from 'path'
 import {
   createCloudSyncPartFileName,
-  createRecordingCaptureTempFileName,
   createRecordingSegmentFileName,
   DEFAULT_CLOUD_SYNC_PART_SIZE_BYTES
 } from './mediaUtils'
@@ -63,22 +62,7 @@ export async function openRecordingSessionSegment(runtimeSession, index) {
   const startedAt = Date.now()
 
   if (runtimeSession.manifest.cloudSyncEnabled) {
-    // 云同步模式同时维护“连续录制文件”和“当前上传分片”，两者用途不同。
-    if (!runtimeSession.captureTempPath) {
-      runtimeSession.captureTempPath = join(
-        runtimeSession.dir,
-        createRecordingCaptureTempFileName(runtimeSession.manifest.extension)
-      )
-    }
-
-    if (!runtimeSession.writeStream) {
-      // 连续录制文件必须追加写入，否则分片轮转后会覆盖掉已有内容。
-      runtimeSession.writeStream = createWriteStream(runtimeSession.captureTempPath, {
-        flags: 'a'
-      })
-    }
-
-    // partWriteStream 只负责当前云同步分片，便于封段后立刻上传。
+    // 云同步模式只写当前上传分片；最终本地成片会在 stop 后按顺序重组这些分片。
     runtimeSession.partWriteStream = createWriteStream(partPath, { flags: 'w' })
   } else {
     // 本地分段模式下只需要一个当前写流。
@@ -202,27 +186,27 @@ export async function appendRecordingSessionChunk(cloudSyncWorkers, runtimeSessi
     throw new Error('Invalid recording chunk payload.')
   }
 
-  const stream = runtimeSession.writeStream
+  const stream = runtimeSession.manifest.cloudSyncEnabled
+    ? runtimeSession.partWriteStream
+    : runtimeSession.writeStream
   const currentSegment = runtimeSession.currentSegment
   if (!stream || !currentSegment) {
     throw new Error('Recording segment is not available.')
   }
 
-  const writeStreams = runtimeSession.manifest.cloudSyncEnabled
-    ? [runtimeSession.writeStream, runtimeSession.partWriteStream]
-    : [runtimeSession.writeStream]
+  const writeStreams = [stream]
 
   /*
    * 输入事实：
-   * - 云同步模式下，同一份 chunk 同时服务两个目标：最终本地成片和边录边上传分片。
+   * - 云同步模式下，当前分片既是上传输入，也是 stop 后重组本地成片的输入。
    * - 高帧率录制时 chunk 写入频率很高，背压问题会真实出现。
    *
    * 状态目标：
-   * - 保证两个目标文件都收到同样的数据。
+   * - 保证当前目标文件收到完整 chunk。
    * - 在高吞吐情况下仍保持可控内存占用。
    *
    * 风险点：
-   * - 只写成功一个流会导致本地成片和上传分片内容不一致。
+   * - 写入失败会导致当前分片不可用于上传或最终重组。
    * - 忽略背压会让内部缓冲持续膨胀，最终拖垮进程。
    *
    * 顺序约束：

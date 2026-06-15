@@ -30,6 +30,8 @@ export const MIN_SEGMENT_DURATION_MS = 1 * 1000
 export const DEFAULT_CLOUD_SYNC_PART_SIZE_BYTES = 2 * 1024 * 1024
 /** 磁盘空间低于该阈值时，界面会展示容量告警。 */
 export const LOW_DISK_SPACE_THRESHOLD_BYTES = 2 * 1024 * 1024 * 1024
+/** 磁盘空间低于该阈值时，主进程会阻止继续写入录屏数据。 */
+export const CRITICAL_DISK_SPACE_THRESHOLD_BYTES = 500 * 1024 * 1024
 /** 内置云同步服务的默认开发地址。 */
 export const DEFAULT_CLOUD_SYNC_SERVER_URL = 'http://127.0.0.1:8787'
 /** 云同步上传与重试流程使用的退避时间表。 */
@@ -95,11 +97,6 @@ export function createRecordingSegmentFileName(index, extension = 'webm') {
 export function createCloudSyncPartFileName(index) {
   const indexLabel = String(index).padStart(4, '0')
   return `part-${indexLabel}.bin`
-}
-
-/** 生成连续录制临时文件名。 */
-export function createRecordingCaptureTempFileName(extension = 'webm') {
-  return `capture.${extension}.part`
 }
 
 /** 根据 mime type 推断视频扩展名。 */

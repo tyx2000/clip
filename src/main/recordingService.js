@@ -7,13 +7,13 @@ import {
   DEFAULT_CLOUD_SYNC_SERVER_URL,
   DEFAULT_SEGMENT_DURATION_MS,
   MIN_SEGMENT_DURATION_MS,
-  createRecordingCaptureTempFileName,
   createRecordingSessionId,
   getRecordingSessionsDirectoryPath,
   getVideoExtensionFromMimeType
 } from './mediaUtils'
 import * as recordingFinalizer from './recordingFinalizer'
 import {
+  assertRecordingStorageWritable,
   createRuntimeSessionFromDatabase,
   createRecordingSessionState,
   getRecordingSessionStatus,
@@ -137,6 +137,17 @@ async function normalizeRecoveredRecordingSession(runtimeSession) {
       continue
     }
 
+    if (
+      runtimeSession.manifest.cloudSyncEnabled &&
+      segment?.status === 'ready' &&
+      segment.uploadStatus === 'uploaded' &&
+      typeof segment.checksum === 'string' &&
+      segment.checksum
+    ) {
+      // 已上传且有 checksum 的分片可能已被本地回收，仍可用于远端 merge。
+      continue
+    }
+
     if (segment?.status !== 'writing') {
       continue
     }
@@ -218,21 +229,10 @@ function shouldRecoverRecordingSession(runtimeSession) {
     return false
   }
 
-  if (runtimeSession.manifest.cloudSyncEnabled) {
-    const captureTempPath =
-      runtimeSession.captureTempPath ||
-      join(
-        runtimeSession.dir,
-        createRecordingCaptureTempFileName(runtimeSession.manifest.extension)
-      )
-    if (existsSync(captureTempPath)) {
-      // 云同步模式下只要连续录制文件还在，就可以继续走本地收尾。
-      return true
-    }
-  }
-
-  // 本地分段模式则看是否还有 ready 片段可用于合并。
-  return runtimeSession.manifest.segments.some((segment) => segment.status === 'ready')
+  // 本地恢复只处理仍有本地文件的 ready 分片；已上传并回收的分片交给云同步恢复。
+  return runtimeSession.manifest.segments.some(
+    (segment) => segment.status === 'ready' && existsSync(segment.path)
+  )
 }
 
 /** 启动时扫描并恢复未完成的本地录屏会话。 */
@@ -489,6 +489,8 @@ export async function createRecordingSession(payload = {}) {
   const cloudSyncServerUrl = cloudSyncServerUrlCandidate.replace(/\/+$/, '')
   const sessionDir = join(getRecordingSessionsDirectoryPath(), sessionId)
 
+  await assertRecordingStorageWritable('开始录制')
+
   if (existsSync(sessionDir)) {
     // 会话目录已存在通常意味着 sessionId 撞车或上次清理异常，直接阻止覆盖。
     throw new Error('Recording session directory already exists.')
@@ -540,6 +542,7 @@ export async function appendRecordingSessionChunk(payload = {}) {
   }
 
   return enqueueRecordingSessionTask(runtimeSession, async () => {
+    await assertRecordingStorageWritable('继续录制')
     // service 层只负责串行化和补完整状态返回，真正写盘逻辑在 recordingSegments。
     const result = await recordingSegments.appendRecordingSessionChunk(
       cloudSyncWorkers,
@@ -589,7 +592,6 @@ export async function stopRecordingSession(payload = {}) {
     /*
      * 输入事实：
      * - 当前会话可能仍有一个 writing 段。
-     * - 云同步模式下还同时持有连续录制文件写流。
      * - stop 后用户通常期望能立刻开始下一次录制。
      *
      * 状态目标：
@@ -600,33 +602,19 @@ export async function stopRecordingSession(payload = {}) {
      * 风险点：
      * - 先改状态不封段，会丢最后一段。
      * - 不及时刷库，崩溃恢复会把 stopped 错判成 recording。
-     * - 云同步模式若主写流没关闭就 merge，最终文件可能缺尾部数据。
+     * - 分段未 finalize 就 merge，最终文件可能缺最后一段数据。
      *
      * 顺序约束：
      * - 必须先 finalize 当前段，再切 stopped，再持久化，再进入 merge/finalize。
      * - activeRecordingSession 的释放要发生在持久化之后、收尾之前。
      *
      * 失败后果：
-     * - 最后一段丢失、重复 stop 出错、恢复误判、capture 文件不完整。
+     * - 最后一段丢失、重复 stop 出错、恢复误判。
      */
     await recordingSegments.finalizeCurrentRecordingSessionSegment(cloudSyncWorkers, runtimeSession)
     // 先把业务状态改成 stopped，再做合并和云同步收尾，避免恢复时误判为录制中。
     runtimeSession.manifest.status = 'stopped'
     runtimeSession.manifest.stoppedAt = Date.now()
-
-    if (runtimeSession.manifest.cloudSyncEnabled && runtimeSession.writeStream) {
-      // 云同步模式下主写流指向连续录制文件，stop 时必须显式关闭。
-      await new Promise((resolveCallback, rejectCallback) => {
-        runtimeSession.writeStream.end((error) => {
-          if (error) {
-            rejectCallback(error)
-            return
-          }
-          resolveCallback()
-        })
-      })
-      runtimeSession.writeStream = null
-    }
 
     await persistRecordingSessionState(runtimeSession)
     if (activeRecordingSession?.id === runtimeSession.id) {
